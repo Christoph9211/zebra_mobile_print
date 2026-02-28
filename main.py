@@ -1,4 +1,6 @@
+import html
 import os
+import textwrap
 from typing import Optional
 
 from fastapi import FastAPI
@@ -17,9 +19,22 @@ PORT = int(os.environ.get("ZPL_SERVER_PORT", "8787"))
 # Example: "ZDesigner ZD411-203dpi ZPL"
 DEFAULT_PRINTER = os.environ.get("ZPL_PRINTER_NAME", "")
 
+DEFAULT_WARNING = """THCa PRODUCT
+
+HEMP-DERIVED PRODUCT-CONTAINS LESS THAN 0.3% DELTA-9 THC
+
+21+ ONLY KEEP OUT OF REACH OF CHILDREN
+
+THIS PRODUCT MAY CAUSE INTOXICATION WHEN HEATED
+
+DO NOT USE WHILE DRIVING OR OPERATING HEAVY MACHINERY
+
+CONSULT A PHYSICIAN BEFORE USE"""
+
 # 2x1 @ 203dpi -> 406x203 dots
 LABEL_WIDTH_DOTS = 406
 LABEL_HEIGHT_DOTS = 203
+LABEL_Y_OFFSET = 6
 
 
 # -----------------------
@@ -31,36 +46,40 @@ def zpl_escape(s: str) -> str:
     return str(s).replace("^", "").replace("~", "").strip()
 
 
-def normalize_warning(s: str) -> str:
+def format_warning_lines(s: str, max_chars: int = 38, max_lines: int = 9) -> str:
     if s is None:
         return ""
-    s = str(s).replace("\r\n", "\n").replace("\r", "\n")
-    # Keep it readable but let ^FB wrap; convert newlines to spaces
-    s = s.replace("\n\n", "  ").replace("\n", " ")
-    return zpl_escape(s)
+    raw = str(s).replace("\r\n", "\n").replace("\r", "\n")
+    paragraphs = [p.strip() for p in raw.split("\n") if p.strip()]
+    lines: list[str] = []
+    for paragraph in paragraphs:
+        wrapped = textwrap.wrap(
+            zpl_escape(paragraph),
+            width=max_chars,
+            break_long_words=True,
+            break_on_hyphens=True,
+        )
+        lines.extend(wrapped or [""])
+        if len(lines) >= max_lines:
+            break
+
+    lines = lines[:max_lines]
+    return r"\&".join(lines)
 
 
 def build_zpl_2x1_centered(
     name: str,
-    code: str,
     price: str,
     warning: str,
     include_warning: bool,
     darkness: int = 20,
-    module_width: int = 2,
-    barcode_height: int = 62,
 ) -> str:
     """
-    Centered 2x1 label:
-      - Name centered
-      - Code128 barcode centered (human readable on)
-      - Price centered
-      - Optional warning (small, wrapped to 2 lines)
+    Centered 2x1 label tuned for product + price + warning.
     """
     name = zpl_escape(name)
-    code = zpl_escape(code)
     price = zpl_escape(price)
-    warning = normalize_warning(warning)
+    warning = format_warning_lines(warning)
 
     z = []
     z += ["^XA"]
@@ -69,30 +88,24 @@ def build_zpl_2x1_centered(
     z += [f"^MD{darkness}"]
 
     # Name
-    z += ["^FO0,6"]
-    z += [f"^FB{LABEL_WIDTH_DOTS},1,0,C,0"]
-    z += ["^A0N,24,24"]
+    z += [f"^FO8,{8 + LABEL_Y_OFFSET}"]
+    z += [f"^FB{LABEL_WIDTH_DOTS-16},2,2,C,0"]
+    z += ["^A0N,20,20"]
     z += [f"^FD{name}^FS"]
 
-    # Barcode (Code128)
-    # NOTE: Very long codes may clip on 2" labels. Keep codes short if possible.
-    z += ["^FO0,40"]
-    z += [f"^FB{LABEL_WIDTH_DOTS},1,0,C,0"]
-    z += [f"^BY{module_width},2,{barcode_height}"]
-    z += [f"^BCN,{barcode_height},Y,N,N"]
-    z += [f"^FD{code}^FS"]
-
     # Price
-    z += ["^FO0,112"]
-    z += [f"^FB{LABEL_WIDTH_DOTS},1,0,C,0"]
-    z += ["^A0N,24,24"]
+    z += [f"^FO8,{56 + LABEL_Y_OFFSET}"]
+    z += [f"^FB{LABEL_WIDTH_DOTS-16},1,0,C,0"]
+    z += ["^A0N,22,22"]
     z += [f"^FD{price}^FS"]
 
     # Warning (optional)
     if include_warning and warning:
-        z += ["^FO10,142"]
-        z += [f"^FB{LABEL_WIDTH_DOTS-20},2,2,C,0"]
-        z += ["^A0N,14,14"]
+        z += [f"^FO10,{86 + LABEL_Y_OFFSET}"]
+        z += [f"^GB{LABEL_WIDTH_DOTS-20},1,1^FS"]
+        z += [f"^FO10,{94 + LABEL_Y_OFFSET}"]
+        z += [f"^FB{LABEL_WIDTH_DOTS-20},9,1,C,0"]
+        z += ["^A0N,10,10"]
         z += [f"^FD{warning}^FS"]
 
     z += ["^XZ"]
@@ -125,14 +138,11 @@ app = FastAPI(title="ZPL Mobile Print Server")
 class PrintJob(BaseModel):
     printer: Optional[str] = Field(default=None, description="Windows printer name (optional)")
     name: str = Field(default="", description="Top text")
-    code: str = Field(default="", description="Barcode data")
     price: str = Field(default="", description="Bottom text")
-    warning: str = Field(default="", description="Health warning block")
+    warning: str = Field(default=DEFAULT_WARNING, description="Health warning block")
     include_warning: bool = Field(default=True)
     copies: int = Field(default=1, ge=1, le=200)
     darkness: int = Field(default=20, ge=0, le=30)
-    module_width: int = Field(default=2, ge=1, le=4)
-    barcode_height: int = Field(default=62, ge=40, le=120)
 
 
 @app.get("/printers", response_class=PlainTextResponse)
@@ -150,13 +160,10 @@ def root():
 def make_zpl(job: PrintJob):
     zpl = build_zpl_2x1_centered(
         name=job.name,
-        code=job.code,
         price=job.price,
         warning=job.warning,
         include_warning=job.include_warning,
         darkness=job.darkness,
-        module_width=job.module_width,
-        barcode_height=job.barcode_height,
     )
     return zpl
 
@@ -172,13 +179,10 @@ def print_label(job: PrintJob):
 
     zpl = build_zpl_2x1_centered(
         name=job.name,
-        code=job.code,
         price=job.price,
         warning=job.warning,
         include_warning=job.include_warning,
         darkness=job.darkness,
-        module_width=job.module_width,
-        barcode_height=job.barcode_height,
     )
 
     for _ in range(job.copies):
@@ -233,14 +237,11 @@ MOBILE_HTML = r"""
     <label>Item name (top)</label>
     <input id="name" placeholder="e.g. Pre-Roll - Cherry Pie" />
 
-    <label>Barcode / SKU (this must match Clover Alternate Lookup Code)</label>
-    <input id="code" placeholder="e.g. FLW-REG-FLWRPRRLL" />
-
-    <label>Price / note (bottom)</label>
+    <label>Price / note</label>
     <input id="price" placeholder="e.g. $5.00" />
 
     <label>Health warning (optional)</label>
-    <textarea id="warning" placeholder="Paste your required warning here..."></textarea>
+    <textarea id="warning" placeholder="Paste your required warning here...">__DEFAULT_WARNING__</textarea>
 
     <div class="toggle">
       <input type="checkbox" id="include_warning" checked />
@@ -255,17 +256,6 @@ MOBILE_HTML = r"""
       <div>
         <label>Darkness</label>
         <input id="darkness" type="number" min="0" max="30" value="20" />
-      </div>
-    </div>
-
-    <div class="row">
-      <div>
-        <label>Barcode thickness</label>
-        <input id="module_width" type="number" min="1" max="4" value="2" />
-      </div>
-      <div>
-        <label>Barcode height</label>
-        <input id="barcode_height" type="number" min="40" max="120" value="62" />
       </div>
     </div>
 
@@ -310,14 +300,11 @@ function jobPayload() {
   return {
     printer: document.getElementById('printer').value || null,
     name: document.getElementById('name').value,
-    code: document.getElementById('code').value,
     price: document.getElementById('price').value,
     warning: document.getElementById('warning').value,
     include_warning: document.getElementById('include_warning').checked,
     copies: parseInt(document.getElementById('copies').value || '1', 10),
     darkness: parseInt(document.getElementById('darkness').value || '20', 10),
-    module_width: parseInt(document.getElementById('module_width').value || '2', 10),
-    barcode_height: parseInt(document.getElementById('barcode_height').value || '62', 10),
   };
 }
 
@@ -363,7 +350,7 @@ loadPrinters();
 </script>
 </body>
 </html>
-"""
+""".replace("__DEFAULT_WARNING__", html.escape(DEFAULT_WARNING))
 
 
 if __name__ == "__main__":
