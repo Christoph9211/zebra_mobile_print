@@ -4,7 +4,7 @@ import textwrap
 from typing import Optional
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 import win32print  # pip install pywin32
@@ -115,7 +115,7 @@ def build_zpl_2x1_centered(
 def send_raw_zpl(printer_name: str, zpl: str) -> None:
     h = win32print.OpenPrinter(printer_name)
     try:
-        job = win32print.StartDocPrinter(h, 1, ("ZPL Mobile Label", None, "RAW"))
+        job = win32print.StartDocPrinter(h, 1, ("ZPL Mobile Label", "", "RAW"))
         win32print.StartPagePrinter(h)
         win32print.WritePrinter(h, zpl.encode("ascii", errors="ignore"))
         win32print.EndPagePrinter(h)
@@ -154,6 +154,11 @@ def printers():
 def root():
     # Serve the embedded mobile page (keeps beginner setup simple: one script file)
     return MOBILE_HTML
+
+
+@app.get("/favicon.ico")
+def favicon():
+    return FileResponse("favicon.ico")
 
 
 @app.post("/zpl", response_class=PlainTextResponse)
