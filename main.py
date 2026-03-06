@@ -73,6 +73,7 @@ def build_zpl_2x1_centered(
     warning: str,
     include_warning: bool,
     darkness: int = 20,
+    vertical_offset: int = 0,
 ) -> str:
     """
     Centered 2x1 label tuned for product + price + warning.
@@ -80,6 +81,8 @@ def build_zpl_2x1_centered(
     name = zpl_escape(name)
     price = zpl_escape(price)
     warning = format_warning_lines(warning)
+    # Positive values move content up; negative values move content down.
+    y_offset = LABEL_Y_OFFSET - vertical_offset
 
     z = []
     z += ["^XA"]
@@ -88,22 +91,22 @@ def build_zpl_2x1_centered(
     z += [f"^MD{darkness}"]
 
     # Name
-    z += [f"^FO8,{8 + LABEL_Y_OFFSET}"]
+    z += [f"^FO8,{8 + y_offset}"]
     z += [f"^FB{LABEL_WIDTH_DOTS-16},2,2,C,0"]
     z += ["^A0N,20,20"]
     z += [f"^FD{name}^FS"]
 
     # Price
-    z += [f"^FO8,{56 + LABEL_Y_OFFSET}"]
+    z += [f"^FO8,{56 + y_offset}"]
     z += [f"^FB{LABEL_WIDTH_DOTS-16},1,0,C,0"]
     z += ["^A0N,22,22"]
     z += [f"^FD{price}^FS"]
 
     # Warning (optional)
     if include_warning and warning:
-        z += [f"^FO10,{86 + LABEL_Y_OFFSET}"]
+        z += [f"^FO10,{86 + y_offset}"]
         z += [f"^GB{LABEL_WIDTH_DOTS-20},1,1^FS"]
-        z += [f"^FO10,{94 + LABEL_Y_OFFSET}"]
+        z += [f"^FO10,{94 + y_offset}"]
         z += [f"^FB{LABEL_WIDTH_DOTS-20},9,1,C,0"]
         z += ["^A0N,10,10"]
         z += [f"^FD{warning}^FS"]
@@ -143,6 +146,7 @@ class PrintJob(BaseModel):
     include_warning: bool = Field(default=True)
     copies: int = Field(default=1, ge=1, le=200)
     darkness: int = Field(default=20, ge=0, le=30)
+    vertical_offset: int = Field(default=0, ge=-60, le=60, description="Shift label content in dots: positive up, negative down")
 
 
 @app.get("/printers", response_class=PlainTextResponse)
@@ -169,6 +173,7 @@ def make_zpl(job: PrintJob):
         warning=job.warning,
         include_warning=job.include_warning,
         darkness=job.darkness,
+        vertical_offset=job.vertical_offset,
     )
     return zpl
 
@@ -188,6 +193,7 @@ def print_label(job: PrintJob):
         warning=job.warning,
         include_warning=job.include_warning,
         darkness=job.darkness,
+        vertical_offset=job.vertical_offset,
     )
 
     for _ in range(job.copies):
@@ -216,19 +222,22 @@ MOBILE_HTML = r"""
     .row > div { flex: 1; }
     .btnrow { display: flex; gap: 12px; margin-top: 16px; }
     button {
-      flex: 1;
       font-size: 20px;
       padding: 14px;
       border-radius: 14px;
       border: 0;
       cursor: pointer;
     }
+    .btnrow button { flex: 1; }
     #printBtn { background: #111; color: #fff; }
     #zplBtn { background: #f2f2f2; }
     #status { margin-top: 12px; white-space: pre-wrap; }
     .small { font-size: 13px; color: #666; margin-top: 6px; }
     .toggle { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
     .toggle input { width: auto; transform: scale(1.3); }
+    .offset-control { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+    .offset-control input { width: 110px; text-align: center; font-weight: 700; }
+    .offset-btn { flex: 0 0 auto; font-size: 16px; padding: 10px 14px; background: #f2f2f2; border: 1px solid #ccc; }
   </style>
 </head>
 <body>
@@ -263,6 +272,14 @@ MOBILE_HTML = r"""
         <input id="darkness" type="number" min="0" max="30" value="20" />
       </div>
     </div>
+
+    <label>Vertical label offset</label>
+    <div class="offset-control">
+      <button id="offsetUpBtn" class="offset-btn" type="button">Up</button>
+      <input id="vertical_offset" type="number" min="-60" max="60" value="0" readonly />
+      <button id="offsetDownBtn" class="offset-btn" type="button">Down</button>
+    </div>
+    <div class="small">Use positive values to move print up, negative values to move print down. 1 step = 1 dot.</div>
 
     <div class="btnrow">
       <button id="zplBtn" type="button">Generate ZPL</button>
@@ -310,6 +327,7 @@ function jobPayload() {
     include_warning: document.getElementById('include_warning').checked,
     copies: parseInt(document.getElementById('copies').value || '1', 10),
     darkness: parseInt(document.getElementById('darkness').value || '20', 10),
+    vertical_offset: parseInt(document.getElementById('vertical_offset').value || '0', 10),
   };
 }
 
@@ -350,6 +368,19 @@ async function printLabel() {
 
 document.getElementById('zplBtn').addEventListener('click', generateZPL);
 document.getElementById('printBtn').addEventListener('click', printLabel);
+const verticalOffsetInput = document.getElementById('vertical_offset');
+
+function clampOffset(value) {
+  return Math.max(-60, Math.min(60, value));
+}
+
+function nudgeOffset(delta) {
+  const current = parseInt(verticalOffsetInput.value || '0', 10);
+  verticalOffsetInput.value = String(clampOffset(current + delta));
+}
+
+document.getElementById('offsetUpBtn').addEventListener('click', () => nudgeOffset(1));
+document.getElementById('offsetDownBtn').addEventListener('click', () => nudgeOffset(-1));
 
 loadPrinters();
 </script>
