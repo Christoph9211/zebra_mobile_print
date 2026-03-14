@@ -165,6 +165,16 @@ def favicon():
     return FileResponse("favicon.ico")
 
 
+@app.get("/apple-touch-icon.png")
+def apple_touch_icon():
+    return FileResponse("favicon.ico")
+
+
+@app.get("/apple-touch-icon-precomposed.png")
+def apple_touch_icon_precomposed():
+    return FileResponse("favicon.ico")
+
+
 @app.post("/zpl", response_class=PlainTextResponse)
 def make_zpl(job: PrintJob):
     zpl = build_zpl_2x1_centered(
@@ -212,6 +222,8 @@ MOBILE_HTML = r"""
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Zebra Mobile Label Print</title>
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; }
     .card { max-width: 720px; margin: 0 auto; padding: 16px; border: 1px solid #ddd; border-radius: 14px; }
