@@ -250,6 +250,16 @@ MOBILE_HTML = r"""
     .offset-control { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
     .offset-control input { width: 110px; text-align: center; font-weight: 700; }
     .offset-btn { flex: 0 0 auto; font-size: 16px; padding: 10px 14px; background: #f2f2f2; border: 1px solid #ccc; }
+    .history-title { margin-top: 22px; margin-bottom: 10px; }
+    #historyList { display: flex; flex-direction: column; gap: 10px; }
+    .history-item { border: 1px solid #ddd; border-radius: 12px; padding: 12px; background: #fafafa; }
+    .history-main { font-weight: 700; font-size: 16px; }
+    .history-meta { margin-top: 4px; font-size: 13px; color: #555; line-height: 1.4; }
+    .history-actions { display: flex; gap: 8px; margin-top: 10px; }
+    .history-actions button { flex: 1; font-size: 16px; padding: 10px 12px; border-radius: 12px; border: 0; }
+    .hist-load { background: #f2f2f2; }
+    .hist-reprint { background: #111; color: #fff; }
+    .hist-delete { background: #ffdede; color: #8b0000; }
   </style>
 </head>
 <body>
@@ -297,6 +307,9 @@ MOBILE_HTML = r"""
       <button id="zplBtn" type="button">Generate ZPL</button>
       <button id="printBtn" type="button">PRINT</button>
     </div>
+
+    <h3 class="history-title">Recent Labels</h3>
+    <div id="historyList"></div>
 
     <pre id="status"></pre>
   </div>
@@ -361,6 +374,7 @@ function readHistory() {
 
 function writeHistory(list) {
   localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+  renderHistory();
 }
 
 function jobFingerprint(job) {
@@ -372,6 +386,121 @@ function jobFingerprint(job) {
     darkness: Number(job.darkness ?? 0),
     vertical_offset: Number(job.vertical_offset ?? 0),
   });
+}
+
+function formatTimestamp(value) {
+  if (!value) return 'Unknown time';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString();
+}
+
+function abbreviatedWarning(text) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return 'No warning';
+  return clean.length > 40 ? `${clean.slice(0, 40)}…` : clean;
+}
+
+function applyJobToForm(job, printer) {
+  document.getElementById('name').value = job.name || '';
+  document.getElementById('price').value = job.price || '';
+  document.getElementById('warning').value = job.warning || '';
+  document.getElementById('include_warning').checked = job.include_warning !== false;
+  document.getElementById('copies').value = String(job.copies || 1);
+  document.getElementById('darkness').value = String(job.darkness ?? 20);
+  document.getElementById('vertical_offset').value = String(job.vertical_offset ?? 0);
+  if (printer) {
+    const select = document.getElementById('printer');
+    const hasOption = Array.from(select.options).some((opt) => opt.value === printer);
+    if (hasOption) {
+      select.value = printer;
+    }
+  }
+}
+
+async function reprintOne(entry) {
+  const status = document.getElementById('status');
+  status.textContent = 'Reprinting 1 copy...';
+  const payload = {
+    ...(entry.job || {}),
+    printer: entry.printer || null,
+    copies: 1,
+  };
+  const res = await fetch('/print', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  });
+  const text = await res.text();
+  status.textContent = text;
+  if (res.ok) {
+    const withoutCurrent = readHistory().filter((row) => row && row.id !== entry.id);
+    withoutCurrent.unshift({ ...entry, ts: new Date().toISOString(), job: payload });
+    writeHistory(withoutCurrent.slice(0, MAX_HISTORY));
+  }
+}
+
+function renderHistory() {
+  const container = document.getElementById('historyList');
+  const history = readHistory();
+  container.innerHTML = '';
+
+  if (history.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'small';
+    empty.textContent = 'No label history yet.';
+    container.appendChild(empty);
+    return;
+  }
+
+  for (const entry of history) {
+    if (!entry || typeof entry !== 'object') continue;
+    const job = entry.job || {};
+
+    const item = document.createElement('div');
+    item.className = 'history-item';
+
+    const main = document.createElement('div');
+    main.className = 'history-main';
+    main.textContent = `${job.name || '(Unnamed item)'} — ${job.price || '(No price)'}`;
+
+    const meta = document.createElement('div');
+    meta.className = 'history-meta';
+    meta.textContent = `Warn: ${abbreviatedWarning(job.warning)} | ${formatTimestamp(entry.ts)} | Printer: ${entry.printer || 'Unknown'}`;
+
+    const actions = document.createElement('div');
+    actions.className = 'history-actions';
+
+    const loadBtn = document.createElement('button');
+    loadBtn.type = 'button';
+    loadBtn.className = 'hist-load';
+    loadBtn.textContent = 'Load';
+    loadBtn.addEventListener('click', () => applyJobToForm(job, entry.printer || ''));
+
+    const reprintBtn = document.createElement('button');
+    reprintBtn.type = 'button';
+    reprintBtn.className = 'hist-reprint';
+    reprintBtn.textContent = 'Reprint 1';
+    reprintBtn.addEventListener('click', () => reprintOne(entry));
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'hist-delete';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.addEventListener('click', () => {
+      const updated = readHistory().filter((row) => row && row.id !== entry.id);
+      writeHistory(updated);
+    });
+
+    actions.appendChild(loadBtn);
+    actions.appendChild(reprintBtn);
+    actions.appendChild(deleteBtn);
+
+    item.appendChild(main);
+    item.appendChild(meta);
+    item.appendChild(actions);
+    container.appendChild(item);
+  }
 }
 
 async function generateZPL() {
@@ -446,6 +575,7 @@ document.getElementById('offsetUpBtn').addEventListener('click', () => nudgeOffs
 document.getElementById('offsetDownBtn').addEventListener('click', () => nudgeOffset(-1));
 
 loadPrinters();
+renderHistory();
 </script>
 </body>
 </html>
