@@ -250,7 +250,9 @@ MOBILE_HTML = r"""
     .offset-control { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
     .offset-control input { width: 110px; text-align: center; font-weight: 700; }
     .offset-btn { flex: 0 0 auto; font-size: 16px; padding: 10px 14px; background: #f2f2f2; border: 1px solid #ccc; }
-    .history-title { margin-top: 22px; margin-bottom: 10px; }
+    .history-header { margin-top: 22px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .history-title { margin: 0; }
+    .clear-history-btn { flex: 0 0 auto; font-size: 14px; padding: 8px 12px; border-radius: 10px; border: 1px solid #ccc; background: #f2f2f2; }
     #historyList { display: flex; flex-direction: column; gap: 10px; }
     .history-item { border: 1px solid #ddd; border-radius: 12px; padding: 12px; background: #fafafa; }
     .history-main { font-weight: 700; font-size: 16px; }
@@ -308,7 +310,10 @@ MOBILE_HTML = r"""
       <button id="printBtn" type="button">PRINT</button>
     </div>
 
-    <h3 class="history-title">Recent Labels</h3>
+    <div class="history-header">
+      <h3 class="history-title">Recent Labels</h3>
+      <button id="clearHistoryBtn" class="clear-history-btn" type="button">Clear all history</button>
+    </div>
     <div id="historyList"></div>
 
     <pre id="status"></pre>
@@ -317,6 +322,12 @@ MOBILE_HTML = r"""
 <script>
 const HISTORY_KEY = 'zebra_label_history_v1';
 const MAX_HISTORY = 30;
+const HISTORY_SCHEMA_VERSION = 1;
+const LIMITS = {
+  darkness: { min: 0, max: 30 },
+  vertical_offset: { min: -60, max: 60 },
+  copies: { min: 1, max: 200 },
+};
 
 async function loadPrinters() {
   const sel = document.getElementById('printer');
@@ -366,8 +377,19 @@ function readHistory() {
       return [];
     }
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((entry) =>
+      entry
+      && typeof entry === 'object'
+      && entry.v === HISTORY_SCHEMA_VERSION
+      && entry.job
+      && typeof entry.job === 'object'
+    );
   } catch (e) {
+    localStorage.removeItem(HISTORY_KEY);
+    document.getElementById('status').textContent = 'Saved label history was corrupted and has been reset.';
     return [];
   }
 }
@@ -402,13 +424,26 @@ function abbreviatedWarning(text) {
 }
 
 function applyJobToForm(job, printer) {
+  const toInt = (value, fallback) => {
+    const parsed = parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+  const inRange = (value, range) => value >= range.min && value <= range.max;
+
+  const copies = toInt(job.copies ?? 1, 1);
+  const darkness = toInt(job.darkness ?? 20, 20);
+  const verticalOffset = toInt(job.vertical_offset ?? 0, 0);
+  const safeCopies = inRange(copies, LIMITS.copies) ? copies : LIMITS.copies.min;
+  const safeDarkness = inRange(darkness, LIMITS.darkness) ? darkness : 20;
+  const safeVerticalOffset = inRange(verticalOffset, LIMITS.vertical_offset) ? verticalOffset : 0;
+
   document.getElementById('name').value = job.name || '';
   document.getElementById('price').value = job.price || '';
   document.getElementById('warning').value = job.warning || '';
   document.getElementById('include_warning').checked = job.include_warning !== false;
-  document.getElementById('copies').value = String(job.copies || 1);
-  document.getElementById('darkness').value = String(job.darkness ?? 20);
-  document.getElementById('vertical_offset').value = String(job.vertical_offset ?? 0);
+  document.getElementById('copies').value = String(safeCopies);
+  document.getElementById('darkness').value = String(safeDarkness);
+  document.getElementById('vertical_offset').value = String(safeVerticalOffset);
   if (printer) {
     const select = document.getElementById('printer');
     const hasOption = Array.from(select.options).some((opt) => opt.value === printer);
@@ -503,6 +538,12 @@ function renderHistory() {
   }
 }
 
+function clearAllHistory() {
+  localStorage.removeItem(HISTORY_KEY);
+  renderHistory();
+  document.getElementById('status').textContent = 'History cleared.';
+}
+
 async function generateZPL() {
   const status = document.getElementById('status');
   status.textContent = 'Generating ZPL...';
@@ -548,6 +589,7 @@ async function printLabel() {
       return !(entryFingerprint === fingerprint && (entry.printer || '') === printer);
     });
     const record = {
+      v: HISTORY_SCHEMA_VERSION,
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
       ts: new Date().toISOString(),
       job,
@@ -573,6 +615,7 @@ function nudgeOffset(delta) {
 
 document.getElementById('offsetUpBtn').addEventListener('click', () => nudgeOffset(1));
 document.getElementById('offsetDownBtn').addEventListener('click', () => nudgeOffset(-1));
+document.getElementById('clearHistoryBtn').addEventListener('click', clearAllHistory);
 
 loadPrinters();
 renderHistory();
