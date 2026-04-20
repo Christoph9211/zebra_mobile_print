@@ -302,6 +302,9 @@ MOBILE_HTML = r"""
   </div>
 
 <script>
+const HISTORY_KEY = 'zebra_label_history_v1';
+const MAX_HISTORY = 30;
+
 async function loadPrinters() {
   const sel = document.getElementById('printer');
   sel.innerHTML = '';
@@ -343,6 +346,34 @@ function jobPayload() {
   };
 }
 
+function readHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function writeHistory(list) {
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+}
+
+function jobFingerprint(job) {
+  return JSON.stringify({
+    name: job.name ?? '',
+    price: job.price ?? '',
+    warning: job.warning ?? '',
+    include_warning: !!job.include_warning,
+    darkness: Number(job.darkness ?? 0),
+    vertical_offset: Number(job.vertical_offset ?? 0),
+  });
+}
+
 async function generateZPL() {
   const status = document.getElementById('status');
   status.textContent = 'Generating ZPL...';
@@ -369,13 +400,33 @@ async function generateZPL() {
 async function printLabel() {
   const status = document.getElementById('status');
   status.textContent = 'Printing...';
+  const job = jobPayload();
   const res = await fetch('/print', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(jobPayload())
+    body: JSON.stringify(job)
   });
   const text = await res.text();
   status.textContent = text;
+
+  if (res.ok) {
+    const fingerprint = jobFingerprint(job);
+    const printer = job.printer || '';
+    const history = readHistory();
+    const deduped = history.filter((entry) => {
+      if (!entry || typeof entry !== 'object') return false;
+      const entryFingerprint = jobFingerprint(entry.job || {});
+      return !(entryFingerprint === fingerprint && (entry.printer || '') === printer);
+    });
+    const record = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+      ts: new Date().toISOString(),
+      job,
+      printer,
+    };
+    deduped.unshift(record);
+    writeHistory(deduped.slice(0, MAX_HISTORY));
+  }
 }
 
 document.getElementById('zplBtn').addEventListener('click', generateZPL);
