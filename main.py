@@ -225,13 +225,20 @@ MOBILE_HTML = r"""
   <link rel="icon" href="/favicon.ico" sizes="any" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; }
-    .card { max-width: 720px; margin: 0 auto; padding: 16px; border: 1px solid #ddd; border-radius: 14px; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; background: #f7f7f5; color: #1f1f1f; }
+    .card { max-width: 760px; margin: 0 auto; padding: 16px; border: 1px solid #ddd; border-radius: 14px; background: #fff; }
     label { font-weight: 600; display: block; margin-top: 14px; }
     input, textarea, select { width: 100%; font-size: 18px; padding: 12px; border-radius: 12px; border: 1px solid #ccc; }
     textarea { min-height: 90px; }
     .row { display: flex; gap: 12px; }
     .row > div { flex: 1; }
+    .row.three > div { flex: 1 1 33%; }
+    .panel { margin-top: 16px; padding: 12px; border: 1px solid #ddd; border-radius: 12px; background: #fbfbfb; }
+    .panel-header, .history-header { margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .panel-title, .history-title { margin: 0; font-size: 18px; }
+    .quick-toolbar { display: flex; gap: 10px; align-items: center; }
+    .quick-toolbar input { flex: 1; min-width: 0; }
     .btnrow { display: flex; gap: 12px; margin-top: 16px; }
     button {
       font-size: 20px;
@@ -243,6 +250,7 @@ MOBILE_HTML = r"""
     .btnrow button { flex: 1; }
     #printBtn { background: #111; color: #fff; }
     #zplBtn { background: #f2f2f2; }
+    #savePinnedBtn { background: #dceee3; color: #164123; }
     #status { margin-top: 12px; white-space: pre-wrap; }
     .small { font-size: 13px; color: #666; margin-top: 6px; }
     .toggle { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
@@ -250,33 +258,88 @@ MOBILE_HTML = r"""
     .offset-control { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
     .offset-control input { width: 110px; text-align: center; font-weight: 700; }
     .offset-btn { flex: 0 0 auto; font-size: 16px; padding: 10px 14px; background: #f2f2f2; border: 1px solid #ccc; }
-    .history-header { margin-top: 22px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-    .history-title { margin: 0; }
-    .clear-history-btn { flex: 0 0 auto; font-size: 14px; padding: 8px 12px; border-radius: 10px; border: 1px solid #ccc; background: #f2f2f2; }
-    #historyList { display: flex; flex-direction: column; gap: 10px; }
-    .history-item { border: 1px solid #ddd; border-radius: 12px; padding: 12px; background: #fafafa; }
+    .clear-history-btn, .small-action-btn { flex: 0 0 auto; font-size: 14px; padding: 8px 12px; border-radius: 10px; border: 1px solid #ccc; background: #f2f2f2; }
+    #catalogList, #historyList { display: flex; flex-direction: column; gap: 10px; }
+    .history-header { margin-top: 22px; }
+    .history-item, .catalog-item { border: 1px solid #ddd; border-radius: 12px; padding: 12px; background: #fafafa; }
     .history-main { font-weight: 700; font-size: 16px; }
     .history-meta { margin-top: 4px; font-size: 13px; color: #555; line-height: 1.4; }
-    .history-actions { display: flex; gap: 8px; margin-top: 10px; }
+    .history-actions, .quick-actions { display: flex; gap: 8px; margin-top: 10px; }
     .history-actions button { flex: 1; font-size: 16px; padding: 10px 12px; border-radius: 12px; border: 0; }
+    .quick-actions button { flex: 1; font-size: 17px; padding: 11px 10px; border-radius: 12px; border: 0; }
     .hist-load { background: #f2f2f2; }
     .hist-reprint { background: #111; color: #fff; }
     .hist-delete { background: #ffdede; color: #8b0000; }
+    .quick-print { background: #111; color: #fff; }
+    .quick-load { background: #f2f2f2; }
+    .empty-state { padding: 8px 0; }
+    @media (max-width: 560px) {
+      body { margin: 8px; }
+      .card { padding: 12px; }
+      .row, .btnrow, .quick-toolbar { flex-direction: column; }
+      .history-actions, .quick-actions { flex-wrap: wrap; }
+      .history-actions button, .quick-actions button { flex: 1 1 30%; }
+    }
   </style>
 </head>
 <body>
   <div class="card">
     <h2 style="margin-top:0">Zebra ZD411 — Mobile Label Print (2×1)</h2>
 
+    <div class="panel">
+      <div class="panel-header">
+        <h3 class="panel-title">Pinned Labels</h3>
+        <button id="savePinnedBtn" class="small-action-btn" type="button">Save current</button>
+      </div>
+      <div class="quick-toolbar">
+        <input id="catalogSearch" placeholder="Search pinned labels..." />
+        <button id="clearSearchBtn" class="small-action-btn" type="button">Clear</button>
+      </div>
+      <div class="small">Tap a saved label to load it, or print 1 / 5 / 10 copies directly.</div>
+      <div id="catalogList" style="margin-top:10px;"></div>
+    </div>
+
     <label>Printer</label>
     <select id="printer"></select>
     <div class="small">If blank, go to /printers on this server to see what Windows calls your printer.</div>
 
-    <label>Item name (top)</label>
-    <input id="name" placeholder="e.g. Pre-Roll - Cherry Pie" />
+    <label>Strain / item name (top)</label>
+    <input id="name" placeholder="e.g. Cherry Pie" autocomplete="off" />
 
-    <label>Price / note</label>
-    <input id="price" placeholder="e.g. $5.00" />
+    <div class="row three">
+      <div>
+        <label>Size</label>
+        <select id="size">
+          <option value="">No size</option>
+          <option value="1 gram">1 gram</option>
+          <option value="3.5 grams">3.5 grams</option>
+          <option value="7 grams">7 grams</option>
+          <option value="28 grams">28 grams</option>
+        </select>
+      </div>
+      <div>
+        <label>Type</label>
+        <select id="strain_type">
+          <option value="">No type</option>
+          <option value="Indica">Indica</option>
+          <option value="Sativa">Sativa</option>
+          <option value="Hybrid">Hybrid</option>
+        </select>
+      </div>
+      <div>
+        <label>Price preset</label>
+        <select id="price_preset">
+          <option value="">Custom</option>
+          <option value="$10.00">$10.00</option>
+          <option value="$25.00">$25.00</option>
+          <option value="$50.00">$50.00</option>
+        </select>
+      </div>
+    </div>
+
+    <label>Custom price / note</label>
+    <input id="price" placeholder="e.g. $10.00 or 2 for $15" />
+    <div class="small">Bottom line prints size, type, and price, for example: 3.5g Hybrid - $25.00.</div>
 
     <label>Health warning (optional)</label>
     <textarea id="warning" placeholder="Paste your required warning here...">__DEFAULT_WARNING__</textarea>
@@ -314,6 +377,10 @@ MOBILE_HTML = r"""
       <h3 class="history-title">Recent Labels</h3>
       <button id="clearHistoryBtn" class="clear-history-btn" type="button">Clear all history</button>
     </div>
+    <div class="quick-toolbar">
+      <input id="historySearch" placeholder="Search previous printed labels..." />
+      <button id="clearHistorySearchBtn" class="small-action-btn" type="button">Clear</button>
+    </div>
     <div id="historyList"></div>
 
     <pre id="status"></pre>
@@ -321,13 +388,123 @@ MOBILE_HTML = r"""
 
 <script>
 const HISTORY_KEY = 'zebra_label_history_v1';
+const CATALOG_KEY = 'zebra_label_catalog_v1';
+const DEFAULTS_KEY = 'zebra_label_defaults_v1';
+const STRAIN_MEMORY_KEY = 'zebra_strain_type_memory_v1';
 const MAX_HISTORY = 30;
 const HISTORY_SCHEMA_VERSION = 1;
+const CATALOG_SCHEMA_VERSION = 1;
+const STRAIN_MEMORY_SCHEMA_VERSION = 1;
 const LIMITS = {
   darkness: { min: 0, max: 30 },
   vertical_offset: { min: -60, max: 60 },
   copies: { min: 1, max: 200 },
 };
+const QUICK_COPY_COUNTS = [1, 5, 10];
+const SIZE_SHORT_LABELS = {
+  '1 gram': '1g',
+  '3.5 grams': '3.5g',
+  '7 grams': '7g',
+  '28 grams': '28g',
+};
+const STRAIN_TYPES = ['Indica', 'Sativa', 'Hybrid'];
+
+function setStatus(message) {
+  document.getElementById('status').textContent = message;
+}
+
+function toInt(value, fallback) {
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function clampNumber(value, range, fallback) {
+  const parsed = toInt(value, fallback);
+  return Math.max(range.min, Math.min(range.max, parsed));
+}
+
+function cleanText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function validStrainType(value) {
+  return STRAIN_TYPES.includes(value) ? value : '';
+}
+
+function shortSizeLabel(value) {
+  const clean = cleanText(value);
+  return SIZE_SHORT_LABELS[clean] || clean;
+}
+
+function composeBottomLine(size, strainType, priceText) {
+  const left = [shortSizeLabel(size), validStrainType(strainType)].filter(Boolean).join(' ');
+  const price = cleanText(priceText);
+  if (left && price) {
+    return `${left} - ${price}`;
+  }
+  return left || price;
+}
+
+function hasStructuredFields(source) {
+  return !!(
+    cleanText(source.size)
+    || validStrainType(cleanText(source.strain_type))
+    || cleanText(source.price_preset)
+    || cleanText(source.price_input)
+    || cleanText(source.price_amount)
+  );
+}
+
+function readJsonArray(key, schemaVersion, resetMessage) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((entry) =>
+      entry
+      && typeof entry === 'object'
+      && entry.v === schemaVersion
+      && entry.job
+      && typeof entry.job === 'object'
+    );
+  } catch (e) {
+    localStorage.removeItem(key);
+    setStatus(resetMessage);
+    return [];
+  }
+}
+
+function normalizeJob(job, copyFallback = 1) {
+  const source = job || {};
+  const structured = hasStructuredFields(source);
+  const size = cleanText(source.size);
+  const strainType = validStrainType(cleanText(source.strain_type));
+  const pricePreset = cleanText(source.price_preset);
+  const priceInput = cleanText(source.price_input ?? source.price_amount ?? pricePreset);
+  const legacyPrice = String(source.price || '');
+  const printablePrice = structured
+    ? composeBottomLine(size, strainType, priceInput || pricePreset || legacyPrice)
+    : legacyPrice;
+  return {
+    printer: source.printer || null,
+    name: String(source.name || ''),
+    price: printablePrice,
+    size,
+    strain_type: strainType,
+    price_preset: pricePreset,
+    price_input: priceInput,
+    warning: String(source.warning || ''),
+    include_warning: source.include_warning !== false,
+    copies: clampNumber(source.copies ?? copyFallback, LIMITS.copies, copyFallback),
+    darkness: clampNumber(source.darkness ?? 20, LIMITS.darkness, 20),
+    vertical_offset: clampNumber(source.vertical_offset ?? 0, LIMITS.vertical_offset, 0),
+  };
+}
 
 async function loadPrinters() {
   const sel = document.getElementById('printer');
@@ -341,6 +518,7 @@ async function loadPrinters() {
       opt.value = '';
       opt.textContent = '(No printers found)';
       sel.appendChild(opt);
+      restoreDefaultsToForm();
       return;
     }
     for (const p of lines) {
@@ -349,49 +527,34 @@ async function loadPrinters() {
       opt.textContent = p;
       sel.appendChild(opt);
     }
+    restoreDefaultsToForm();
   } catch (e) {
     const opt = document.createElement('option');
     opt.value = '';
     opt.textContent = '(Could not load printers)';
     sel.appendChild(opt);
+    restoreDefaultsToForm();
   }
 }
 
 function jobPayload() {
-  return {
+  return normalizeJob({
     printer: document.getElementById('printer').value || null,
     name: document.getElementById('name').value,
-    price: document.getElementById('price').value,
+    size: document.getElementById('size').value,
+    strain_type: document.getElementById('strain_type').value,
+    price_preset: document.getElementById('price_preset').value,
+    price_input: document.getElementById('price').value,
     warning: document.getElementById('warning').value,
     include_warning: document.getElementById('include_warning').checked,
-    copies: parseInt(document.getElementById('copies').value || '1', 10),
-    darkness: parseInt(document.getElementById('darkness').value || '20', 10),
-    vertical_offset: parseInt(document.getElementById('vertical_offset').value || '0', 10),
-  };
+    copies: document.getElementById('copies').value,
+    darkness: document.getElementById('darkness').value,
+    vertical_offset: document.getElementById('vertical_offset').value,
+  });
 }
 
 function readHistory() {
-  try {
-    const raw = localStorage.getItem(HISTORY_KEY);
-    if (!raw) {
-      return [];
-    }
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed.filter((entry) =>
-      entry
-      && typeof entry === 'object'
-      && entry.v === HISTORY_SCHEMA_VERSION
-      && entry.job
-      && typeof entry.job === 'object'
-    );
-  } catch (e) {
-    localStorage.removeItem(HISTORY_KEY);
-    document.getElementById('status').textContent = 'Saved label history was corrupted and has been reset.';
-    return [];
-  }
+  return readJsonArray(HISTORY_KEY, HISTORY_SCHEMA_VERSION, 'Saved label history was corrupted and has been reset.');
 }
 
 function writeHistory(list) {
@@ -399,10 +562,66 @@ function writeHistory(list) {
   renderHistory();
 }
 
+function readCatalog() {
+  return readJsonArray(CATALOG_KEY, CATALOG_SCHEMA_VERSION, 'Saved pinned labels were corrupted and have been reset.');
+}
+
+function writeCatalog(list) {
+  localStorage.setItem(CATALOG_KEY, JSON.stringify(list));
+  renderCatalog();
+}
+
+function saveDefaults(job) {
+  const defaults = normalizeJob(job || jobPayload());
+  localStorage.setItem(DEFAULTS_KEY, JSON.stringify({
+    printer: defaults.printer || '',
+    size: defaults.size,
+    price_preset: defaults.price_preset,
+    price_input: defaults.price_input,
+    warning: defaults.warning,
+    include_warning: defaults.include_warning,
+    darkness: defaults.darkness,
+    vertical_offset: defaults.vertical_offset,
+    copies: defaults.copies,
+  }));
+}
+
+function restoreDefaultsToForm() {
+  try {
+    const raw = localStorage.getItem(DEFAULTS_KEY);
+    if (!raw) {
+      return;
+    }
+    const defaults = JSON.parse(raw);
+    if (!defaults || typeof defaults !== 'object') {
+      return;
+    }
+    const current = jobPayload();
+    applyJobToForm({
+      ...current,
+      size: defaults.size ?? current.size,
+      price_preset: defaults.price_preset ?? current.price_preset,
+      price_input: defaults.price_input ?? current.price_input,
+      warning: defaults.warning ?? current.warning,
+      include_warning: defaults.include_warning !== false,
+      copies: defaults.copies ?? current.copies,
+      darkness: defaults.darkness ?? current.darkness,
+      vertical_offset: defaults.vertical_offset ?? current.vertical_offset,
+    }, defaults.printer || '');
+  } catch (e) {
+    localStorage.removeItem(DEFAULTS_KEY);
+    setStatus('Saved defaults were corrupted and have been reset.');
+  }
+}
+
 function jobFingerprint(job) {
   return JSON.stringify({
     name: job.name ?? '',
     price: job.price ?? '',
+    size: job.size ?? '',
+    strain_type: job.strain_type ?? '',
+    price_preset: job.price_preset ?? '',
+    price_input: job.price_input ?? '',
     warning: job.warning ?? '',
     include_warning: !!job.include_warning,
     darkness: Number(job.darkness ?? 0),
@@ -423,27 +642,102 @@ function abbreviatedWarning(text) {
   return clean.length > 40 ? `${clean.slice(0, 40)}…` : clean;
 }
 
+function normalizeStrainKey(name) {
+  return cleanText(name).toLowerCase();
+}
+
+function readStrainMemory() {
+  try {
+    const raw = localStorage.getItem(STRAIN_MEMORY_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.v !== STRAIN_MEMORY_SCHEMA_VERSION || typeof parsed.map !== 'object') {
+      return {};
+    }
+    return parsed.map || {};
+  } catch (e) {
+    localStorage.removeItem(STRAIN_MEMORY_KEY);
+    setStatus('Saved strain type memory was corrupted and has been reset.');
+    return {};
+  }
+}
+
+function writeStrainMemory(map) {
+  localStorage.setItem(STRAIN_MEMORY_KEY, JSON.stringify({
+    v: STRAIN_MEMORY_SCHEMA_VERSION,
+    map,
+  }));
+}
+
+function rememberStrainType(job) {
+  const normalized = normalizeJob(job);
+  const key = normalizeStrainKey(normalized.name);
+  if (!key || !normalized.strain_type) {
+    return;
+  }
+  const map = readStrainMemory();
+  map[key] = normalized.strain_type;
+  writeStrainMemory(map);
+}
+
+function autofillStrainType() {
+  const select = document.getElementById('strain_type');
+  if (select.value) {
+    return;
+  }
+  const key = normalizeStrainKey(document.getElementById('name').value);
+  if (!key) {
+    return;
+  }
+  const remembered = readStrainMemory()[key];
+  if (remembered && STRAIN_TYPES.includes(remembered)) {
+    select.value = remembered;
+  }
+}
+
+function jobSearchText(job, entry) {
+  const normalized = normalizeJob(job || {});
+  return [
+    normalized.name,
+    normalized.price,
+    normalized.size,
+    normalized.strain_type,
+    normalized.price_input,
+    normalized.warning,
+    entry && entry.printer,
+    entry && formatTimestamp(entry.ts),
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function catalogMatchesSearch(entry, query) {
+  if (!query) {
+    return true;
+  }
+  return jobSearchText(entry.job || {}, entry).includes(query.toLowerCase());
+}
+
+function historyMatchesSearch(entry, query) {
+  if (!query) {
+    return true;
+  }
+  return jobSearchText(entry.job || {}, entry).includes(query.toLowerCase());
+}
+
 function applyJobToForm(job, printer) {
-  const toInt = (value, fallback) => {
-    const parsed = parseInt(value, 10);
-    return Number.isFinite(parsed) ? parsed : fallback;
-  };
-  const inRange = (value, range) => value >= range.min && value <= range.max;
+  const normalized = normalizeJob(job);
 
-  const copies = toInt(job.copies ?? 1, 1);
-  const darkness = toInt(job.darkness ?? 20, 20);
-  const verticalOffset = toInt(job.vertical_offset ?? 0, 0);
-  const safeCopies = inRange(copies, LIMITS.copies) ? copies : LIMITS.copies.min;
-  const safeDarkness = inRange(darkness, LIMITS.darkness) ? darkness : 20;
-  const safeVerticalOffset = inRange(verticalOffset, LIMITS.vertical_offset) ? verticalOffset : 0;
-
-  document.getElementById('name').value = job.name || '';
-  document.getElementById('price').value = job.price || '';
-  document.getElementById('warning').value = job.warning || '';
-  document.getElementById('include_warning').checked = job.include_warning !== false;
-  document.getElementById('copies').value = String(safeCopies);
-  document.getElementById('darkness').value = String(safeDarkness);
-  document.getElementById('vertical_offset').value = String(safeVerticalOffset);
+  document.getElementById('name').value = normalized.name;
+  document.getElementById('size').value = normalized.size;
+  document.getElementById('strain_type').value = normalized.strain_type;
+  document.getElementById('price_preset').value = normalized.price_preset;
+  document.getElementById('price').value = normalized.price_input || normalized.price;
+  document.getElementById('warning').value = normalized.warning;
+  document.getElementById('include_warning').checked = normalized.include_warning;
+  document.getElementById('copies').value = String(normalized.copies);
+  document.getElementById('darkness').value = String(normalized.darkness);
+  document.getElementById('vertical_offset').value = String(normalized.vertical_offset);
   if (printer) {
     const select = document.getElementById('printer');
     const hasOption = Array.from(select.options).some((opt) => opt.value === printer);
@@ -451,15 +745,37 @@ function applyJobToForm(job, printer) {
       select.value = printer;
     }
   }
+  saveDefaults(jobPayload());
 }
 
-async function reprintOne(entry) {
-  const status = document.getElementById('status');
-  status.textContent = 'Reprinting 1 copy...';
+function recordHistory(job) {
+  const normalized = normalizeJob(job);
+  const fingerprint = jobFingerprint(normalized);
+  const printer = normalized.printer || '';
+  const history = readHistory();
+  const deduped = history.filter((entry) => {
+    if (!entry || typeof entry !== 'object') return false;
+    const entryFingerprint = jobFingerprint(entry.job || {});
+    return !(entryFingerprint === fingerprint && (entry.printer || '') === printer);
+  });
+  const record = {
+    v: HISTORY_SCHEMA_VERSION,
+    id: `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+    ts: new Date().toISOString(),
+    job: normalized,
+    printer,
+  };
+  deduped.unshift(record);
+  writeHistory(deduped.slice(0, MAX_HISTORY));
+  rememberStrainType(normalized);
+}
+
+async function printJob(job, copies, message) {
+  setStatus(message || `Printing ${copies} copy/copies...`);
   const payload = {
-    ...(entry.job || {}),
-    printer: entry.printer || null,
-    copies: 1,
+    ...normalizeJob(job, copies),
+    printer: job.printer || document.getElementById('printer').value || null,
+    copies: clampNumber(copies, LIMITS.copies, 1),
   };
   const res = await fetch('/print', {
     method: 'POST',
@@ -467,30 +783,127 @@ async function reprintOne(entry) {
     body: JSON.stringify(payload)
   });
   const text = await res.text();
-  status.textContent = text;
+  setStatus(text);
   if (res.ok) {
-    const withoutCurrent = readHistory().filter((row) => row && row.id !== entry.id);
-    withoutCurrent.unshift({ ...entry, ts: new Date().toISOString(), job: payload });
-    writeHistory(withoutCurrent.slice(0, MAX_HISTORY));
+    recordHistory(payload);
+    saveDefaults(payload);
+  }
+  return res.ok;
+}
+
+function saveCurrentAsPinned() {
+  const job = normalizeJob(jobPayload());
+  if (!job.name.trim() && !job.price.trim()) {
+    setStatus('Enter an item name or price before saving a pinned label.');
+    return;
+  }
+  const fingerprint = jobFingerprint(job);
+  const existing = readCatalog();
+  const deduped = existing.filter((entry) => jobFingerprint(entry.job || {}) !== fingerprint);
+  const record = {
+    v: CATALOG_SCHEMA_VERSION,
+    id: `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+    ts: new Date().toISOString(),
+    job: {
+      ...job,
+      printer: null,
+    },
+  };
+  deduped.unshift(record);
+  writeCatalog(deduped);
+  rememberStrainType(job);
+  saveDefaults(job);
+  setStatus('Pinned label saved.');
+}
+
+function deletePinned(entry) {
+  const updated = readCatalog().filter((row) => row && row.id !== entry.id);
+  writeCatalog(updated);
+  setStatus('Pinned label deleted.');
+}
+
+function renderCatalog() {
+  const container = document.getElementById('catalogList');
+  const query = document.getElementById('catalogSearch').value.trim();
+  const catalog = readCatalog().filter((entry) => catalogMatchesSearch(entry, query));
+  container.innerHTML = '';
+
+  if (catalog.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'small empty-state';
+    empty.textContent = query ? 'No pinned labels match that search.' : 'No pinned labels yet.';
+    container.appendChild(empty);
+    return;
+  }
+
+  for (const entry of catalog) {
+    if (!entry || typeof entry !== 'object') continue;
+    const job = normalizeJob(entry.job || {});
+
+    const item = document.createElement('div');
+    item.className = 'catalog-item';
+
+    const main = document.createElement('div');
+    main.className = 'history-main';
+    main.textContent = `${job.name || '(Unnamed item)'} — ${job.price || '(No price)'}`;
+
+    const meta = document.createElement('div');
+    meta.className = 'history-meta';
+    meta.textContent = `Bottom: ${job.price || 'No bottom line'} | Warn: ${abbreviatedWarning(job.warning)} | Saved: ${formatTimestamp(entry.ts)}`;
+
+    const quickActions = document.createElement('div');
+    quickActions.className = 'quick-actions';
+
+    const loadBtn = document.createElement('button');
+    loadBtn.type = 'button';
+    loadBtn.className = 'quick-load';
+    loadBtn.textContent = 'Load';
+    loadBtn.addEventListener('click', () => {
+      applyJobToForm(job, '');
+      setStatus('Pinned label loaded.');
+    });
+    quickActions.appendChild(loadBtn);
+
+    for (const count of QUICK_COPY_COUNTS) {
+      const printBtn = document.createElement('button');
+      printBtn.type = 'button';
+      printBtn.className = 'quick-print';
+      printBtn.textContent = `Print ${count}`;
+      printBtn.addEventListener('click', () => printJob(job, count, `Printing ${count} copy/copies from pinned label...`));
+      quickActions.appendChild(printBtn);
+    }
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'hist-delete';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.addEventListener('click', () => deletePinned(entry));
+    quickActions.appendChild(deleteBtn);
+
+    item.appendChild(main);
+    item.appendChild(meta);
+    item.appendChild(quickActions);
+    container.appendChild(item);
   }
 }
 
 function renderHistory() {
   const container = document.getElementById('historyList');
-  const history = readHistory();
+  const query = document.getElementById('historySearch').value.trim();
+  const history = readHistory().filter((entry) => historyMatchesSearch(entry, query));
   container.innerHTML = '';
 
   if (history.length === 0) {
     const empty = document.createElement('div');
-    empty.className = 'small';
-    empty.textContent = 'No label history yet.';
+    empty.className = 'small empty-state';
+    empty.textContent = query ? 'No previous printed labels match that search.' : 'No label history yet.';
     container.appendChild(empty);
     return;
   }
 
   for (const entry of history) {
     if (!entry || typeof entry !== 'object') continue;
-    const job = entry.job || {};
+    const job = normalizeJob(entry.job || {});
 
     const item = document.createElement('div');
     item.className = 'history-item';
@@ -501,7 +914,7 @@ function renderHistory() {
 
     const meta = document.createElement('div');
     meta.className = 'history-meta';
-    meta.textContent = `Warn: ${abbreviatedWarning(job.warning)} | ${formatTimestamp(entry.ts)} | Printer: ${entry.printer || 'Unknown'}`;
+    meta.textContent = `Bottom: ${job.price || 'No bottom line'} | Warn: ${abbreviatedWarning(job.warning)} | ${formatTimestamp(entry.ts)} | Printer: ${entry.printer || 'Unknown'}`;
 
     const actions = document.createElement('div');
     actions.className = 'history-actions';
@@ -510,13 +923,10 @@ function renderHistory() {
     loadBtn.type = 'button';
     loadBtn.className = 'hist-load';
     loadBtn.textContent = 'Load';
-    loadBtn.addEventListener('click', () => applyJobToForm(job, entry.printer || ''));
-
-    const reprintBtn = document.createElement('button');
-    reprintBtn.type = 'button';
-    reprintBtn.className = 'hist-reprint';
-    reprintBtn.textContent = 'Reprint 1';
-    reprintBtn.addEventListener('click', () => reprintOne(entry));
+    loadBtn.addEventListener('click', () => {
+      applyJobToForm(job, entry.printer || '');
+      setStatus('Recent label loaded.');
+    });
 
     const deleteBtn = document.createElement('button');
     deleteBtn.type = 'button';
@@ -528,7 +938,20 @@ function renderHistory() {
     });
 
     actions.appendChild(loadBtn);
-    actions.appendChild(reprintBtn);
+    for (const count of QUICK_COPY_COUNTS) {
+      const reprintBtn = document.createElement('button');
+      reprintBtn.type = 'button';
+      reprintBtn.className = 'hist-reprint';
+      reprintBtn.textContent = `Reprint ${count}`;
+      reprintBtn.addEventListener('click', () => {
+        const payload = {
+          ...job,
+          printer: entry.printer || document.getElementById('printer').value || null,
+        };
+        printJob(payload, count, `Reprinting ${count} copy/copies...`);
+      });
+      actions.appendChild(reprintBtn);
+    }
     actions.appendChild(deleteBtn);
 
     item.appendChild(main);
@@ -541,16 +964,16 @@ function renderHistory() {
 function clearAllHistory() {
   localStorage.removeItem(HISTORY_KEY);
   renderHistory();
-  document.getElementById('status').textContent = 'History cleared.';
+  setStatus('History cleared.');
 }
 
 async function generateZPL() {
-  const status = document.getElementById('status');
-  status.textContent = 'Generating ZPL...';
+  setStatus('Generating ZPL...');
+  const job = jobPayload();
   const res = await fetch('/zpl', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(jobPayload())
+    body: JSON.stringify(job)
   });
   const zpl = await res.text();
 
@@ -564,45 +987,44 @@ async function generateZPL() {
   a.click();
   URL.revokeObjectURL(url);
 
-  status.textContent = 'ZPL downloaded.';
+  saveDefaults(job);
+  setStatus('ZPL downloaded.');
 }
 
 async function printLabel() {
-  const status = document.getElementById('status');
-  status.textContent = 'Printing...';
   const job = jobPayload();
-  const res = await fetch('/print', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(job)
-  });
-  const text = await res.text();
-  status.textContent = text;
-
-  if (res.ok) {
-    const fingerprint = jobFingerprint(job);
-    const printer = job.printer || '';
-    const history = readHistory();
-    const deduped = history.filter((entry) => {
-      if (!entry || typeof entry !== 'object') return false;
-      const entryFingerprint = jobFingerprint(entry.job || {});
-      return !(entryFingerprint === fingerprint && (entry.printer || '') === printer);
-    });
-    const record = {
-      v: HISTORY_SCHEMA_VERSION,
-      id: `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
-      ts: new Date().toISOString(),
-      job,
-      printer,
-    };
-    deduped.unshift(record);
-    writeHistory(deduped.slice(0, MAX_HISTORY));
-  }
+  await printJob(job, job.copies, 'Printing...');
 }
 
 document.getElementById('zplBtn').addEventListener('click', generateZPL);
 document.getElementById('printBtn').addEventListener('click', printLabel);
+document.getElementById('savePinnedBtn').addEventListener('click', saveCurrentAsPinned);
+document.getElementById('catalogSearch').addEventListener('input', renderCatalog);
+document.getElementById('clearSearchBtn').addEventListener('click', () => {
+  document.getElementById('catalogSearch').value = '';
+  renderCatalog();
+});
+document.getElementById('historySearch').addEventListener('input', renderHistory);
+document.getElementById('clearHistorySearchBtn').addEventListener('click', () => {
+  document.getElementById('historySearch').value = '';
+  renderHistory();
+});
 const verticalOffsetInput = document.getElementById('vertical_offset');
+
+function syncPriceFromPreset() {
+  const preset = document.getElementById('price_preset').value;
+  if (preset) {
+    document.getElementById('price').value = preset;
+  }
+  saveDefaults(jobPayload());
+}
+
+function syncPresetFromPrice() {
+  const price = cleanText(document.getElementById('price').value);
+  const preset = document.getElementById('price_preset');
+  const hasMatchingPreset = Array.from(preset.options).some((opt) => opt.value === price);
+  preset.value = hasMatchingPreset ? price : '';
+}
 
 function clampOffset(value) {
   return Math.max(-60, Math.min(60, value));
@@ -611,13 +1033,24 @@ function clampOffset(value) {
 function nudgeOffset(delta) {
   const current = parseInt(verticalOffsetInput.value || '0', 10);
   verticalOffsetInput.value = String(clampOffset(current + delta));
+  saveDefaults(jobPayload());
 }
 
 document.getElementById('offsetUpBtn').addEventListener('click', () => nudgeOffset(1));
 document.getElementById('offsetDownBtn').addEventListener('click', () => nudgeOffset(-1));
 document.getElementById('clearHistoryBtn').addEventListener('click', clearAllHistory);
+document.getElementById('name').addEventListener('input', autofillStrainType);
+document.getElementById('price_preset').addEventListener('change', syncPriceFromPreset);
+document.getElementById('price').addEventListener('input', () => {
+  syncPresetFromPrice();
+  saveDefaults(jobPayload());
+});
+for (const id of ['printer', 'size', 'strain_type', 'warning', 'include_warning', 'copies', 'darkness', 'vertical_offset']) {
+  document.getElementById(id).addEventListener('change', () => saveDefaults(jobPayload()));
+}
 
 loadPrinters();
+renderCatalog();
 renderHistory();
 </script>
 </body>
