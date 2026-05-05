@@ -312,15 +312,17 @@ MOBILE_HTML = r"""
         <select id="size">
           <option value="">No size</option>
           <option value="1 gram">1 gram</option>
-          <option value="Eighth">Eighth</option>
-          <option value="Quarter">Quarter</option>
+          <option value="3 gram">3 gram</option>
+          <option value="1/8 oz">1/8 oz</option>
+          <option value="1/4 oz">1/4 oz</option>
+          <option value="1 oz">1 oz</option>
           <option value="28 grams">28 grams</option>
         </select>
       </div>
       <div>
         <label>Type</label>
         <select id="strain_type">
-          <option value="">No type</option>
+          <option value="">None</option>
           <option value="Indica">Indica</option>
           <option value="Sativa">Sativa</option>
           <option value="Hybrid">Hybrid</option>
@@ -332,8 +334,11 @@ MOBILE_HTML = r"""
         <label>Price preset</label>
         <select id="price_preset">
           <option value="">Custom</option>
+          <option value="$5.00">$5.00</option>
           <option value="$10.00">$10.00</option>
+          <option value="$18.00">$18.00</option>
           <option value="$25.00">$25.00</option>
+          <option value="$32.50">$32.50</option>
           <option value="$50.00">$50.00</option>
         </select>
       </div>
@@ -405,19 +410,27 @@ const LIMITS = {
 const QUICK_COPY_COUNTS = [1, 5, 10];
 const SIZE_VALUE_MAP = {
   '1 gram': '1 gram',
-  '3.5 grams': 'Eighth',
-  '7 grams': 'Quarter',
+  '3 gram': '3 gram',
+  '3.5 grams': '1/8 oz',
+  '7 grams': '1/4 oz',
+  '1 oz': '1 oz',
   '28 grams': '28 grams',
-  Eighth: 'Eighth',
-  Quarter: 'Quarter',
+  Eighth: '1/8 oz',
+  Quarter: '1/4 oz',
+  '1/8 oz': '1/8 oz',
+  '1/4 oz': '1/4 oz',
 };
 const SIZE_SHORT_LABELS = {
   '1 gram': '1g',
-  '3.5 grams': 'Eighth',
-  '7 grams': 'Quarter',
+  '3 gram': '3g',
+  '3.5 grams': '1/8 oz',
+  '7 grams': '1/4 oz',
+  '1 oz': '1 oz',
   '28 grams': '28g',
-  Eighth: 'Eighth',
-  Quarter: 'Quarter',
+  Eighth: '1/8 oz',
+  Quarter: '1/4 oz',
+  '1/8 oz': '1/8 oz',
+  '1/4 oz': '1/4 oz',
 };
 const STRAIN_TYPES = ['Indica', 'Sativa', 'Hybrid', 'Indica Leaning Hybrid', 'Sativa Leaning Hybrid'];
 
