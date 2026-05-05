@@ -312,8 +312,8 @@ MOBILE_HTML = r"""
         <select id="size">
           <option value="">No size</option>
           <option value="1 gram">1 gram</option>
-          <option value="3.5 grams">3.5 grams</option>
-          <option value="7 grams">7 grams</option>
+          <option value="Eighth">Eighth</option>
+          <option value="Quarter">Quarter</option>
           <option value="28 grams">28 grams</option>
         </select>
       </div>
@@ -324,6 +324,8 @@ MOBILE_HTML = r"""
           <option value="Indica">Indica</option>
           <option value="Sativa">Sativa</option>
           <option value="Hybrid">Hybrid</option>
+          <option value="Indica Leaning Hybrid">Indica Leaning Hybrid</option>
+          <option value="Sativa Leaning Hybrid">Sativa Leaning Hybrid</option>
         </select>
       </div>
       <div>
@@ -401,13 +403,23 @@ const LIMITS = {
   copies: { min: 1, max: 200 },
 };
 const QUICK_COPY_COUNTS = [1, 5, 10];
+const SIZE_VALUE_MAP = {
+  '1 gram': '1 gram',
+  '3.5 grams': 'Eighth',
+  '7 grams': 'Quarter',
+  '28 grams': '28 grams',
+  Eighth: 'Eighth',
+  Quarter: 'Quarter',
+};
 const SIZE_SHORT_LABELS = {
   '1 gram': '1g',
-  '3.5 grams': '3.5g',
-  '7 grams': '7g',
+  '3.5 grams': 'Eighth',
+  '7 grams': 'Quarter',
   '28 grams': '28g',
+  Eighth: 'Eighth',
+  Quarter: 'Quarter',
 };
-const STRAIN_TYPES = ['Indica', 'Sativa', 'Hybrid'];
+const STRAIN_TYPES = ['Indica', 'Sativa', 'Hybrid', 'Indica Leaning Hybrid', 'Sativa Leaning Hybrid'];
 
 function setStatus(message) {
   document.getElementById('status').textContent = message;
@@ -431,8 +443,13 @@ function validStrainType(value) {
   return STRAIN_TYPES.includes(value) ? value : '';
 }
 
-function shortSizeLabel(value) {
+function normalizeSize(value) {
   const clean = cleanText(value);
+  return SIZE_VALUE_MAP[clean] || clean;
+}
+
+function shortSizeLabel(value) {
+  const clean = normalizeSize(value);
   return SIZE_SHORT_LABELS[clean] || clean;
 }
 
@@ -482,7 +499,7 @@ function readJsonArray(key, schemaVersion, resetMessage) {
 function normalizeJob(job, copyFallback = 1) {
   const source = job || {};
   const structured = hasStructuredFields(source);
-  const size = cleanText(source.size);
+  const size = normalizeSize(source.size);
   const strainType = validStrainType(cleanText(source.strain_type));
   const pricePreset = cleanText(source.price_preset);
   const priceInput = cleanText(source.price_input ?? source.price_amount ?? pricePreset);
