@@ -312,11 +312,11 @@ MOBILE_HTML = r"""
         <select id="size">
           <option value="">No size</option>
           <option value="1 gram">1 gram</option>
+          <option value="2 gram">2 gram</option>
           <option value="3 gram">3 gram</option>
           <option value="1/8 oz">1/8 oz</option>
           <option value="1/4 oz">1/4 oz</option>
           <option value="1 oz">1 oz</option>
-          <option value="28 grams">28 grams</option>
         </select>
       </div>
       <div>
@@ -410,11 +410,11 @@ const LIMITS = {
 const QUICK_COPY_COUNTS = [1, 5, 10];
 const SIZE_VALUE_MAP = {
   '1 gram': '1 gram',
+  '2 gram': '2 gram',
   '3 gram': '3 gram',
   '3.5 grams': '1/8 oz',
   '7 grams': '1/4 oz',
   '1 oz': '1 oz',
-  '28 grams': '28 grams',
   Eighth: '1/8 oz',
   Quarter: '1/4 oz',
   '1/8 oz': '1/8 oz',
@@ -422,11 +422,11 @@ const SIZE_VALUE_MAP = {
 };
 const SIZE_SHORT_LABELS = {
   '1 gram': '1g',
+  '2 gram': '2g',
   '3 gram': '3g',
   '3.5 grams': '1/8 oz',
   '7 grams': '1/4 oz',
   '1 oz': '1 oz',
-  '28 grams': '28g',
   Eighth: '1/8 oz',
   Quarter: '1/4 oz',
   '1/8 oz': '1/8 oz',
