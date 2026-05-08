@@ -718,26 +718,33 @@ MOBILE_HTML = r"""
         <select id="size">
           <option value="">No size</option>
           <option value="1 gram">1 gram</option>
-          <option value="3.5 grams">3.5 grams</option>
-          <option value="7 grams">7 grams</option>
-          <option value="28 grams">28 grams</option>
+          <option value="2 gram">2 gram</option>
+          <option value="3 gram">3 gram</option>
+          <option value="1/8 oz">1/8 oz</option>
+          <option value="1/4 oz">1/4 oz</option>
+          <option value="1 oz">1 oz</option>
         </select>
       </div>
       <div>
         <label>Type</label>
         <select id="strain_type">
-          <option value="">No type</option>
+          <option value="">None</option>
           <option value="Indica">Indica</option>
           <option value="Sativa">Sativa</option>
           <option value="Hybrid">Hybrid</option>
+          <option value="Indica Leaning Hybrid">Indica Leaning Hybrid</option>
+          <option value="Sativa Leaning Hybrid">Sativa Leaning Hybrid</option>
         </select>
       </div>
       <div>
         <label>Price preset</label>
         <select id="price_preset">
           <option value="">Custom</option>
+          <option value="$5.00">$5.00</option>
           <option value="$10.00">$10.00</option>
+          <option value="$18.00">$18.00</option>
           <option value="$25.00">$25.00</option>
+          <option value="$32.50">$32.50</option>
           <option value="$50.00">$50.00</option>
         </select>
       </div>
@@ -805,13 +812,31 @@ const LIMITS = {
   copies: { min: 1, max: 200 },
 };
 const QUICK_COPY_COUNTS = [1, 5, 10];
+const SIZE_VALUE_MAP = {
+  '1 gram': '1 gram',
+  '2 gram': '2 gram',
+  '3 gram': '3 gram',
+  '3.5 grams': '1/8 oz',
+  '7 grams': '1/4 oz',
+  '1 oz': '1 oz',
+  Eighth: '1/8 oz',
+  Quarter: '1/4 oz',
+  '1/8 oz': '1/8 oz',
+  '1/4 oz': '1/4 oz',
+};
 const SIZE_SHORT_LABELS = {
   '1 gram': '1g',
-  '3.5 grams': '3.5g',
-  '7 grams': '7g',
-  '28 grams': '28g',
+  '2 gram': '2g',
+  '3 gram': '3g',
+  '3.5 grams': '1/8 oz',
+  '7 grams': '1/4 oz',
+  '1 oz': '1 oz',
+  Eighth: '1/8 oz',
+  Quarter: '1/4 oz',
+  '1/8 oz': '1/8 oz',
+  '1/4 oz': '1/4 oz',
 };
-const STRAIN_TYPES = ['Indica', 'Sativa', 'Hybrid'];
+const STRAIN_TYPES = ['Indica', 'Sativa', 'Hybrid', 'Indica Leaning Hybrid', 'Sativa Leaning Hybrid'];
 
 function setStatus(message) {
   document.getElementById('status').textContent = message;
@@ -995,8 +1020,13 @@ function validStrainType(value) {
   return STRAIN_TYPES.includes(value) ? value : '';
 }
 
-function shortSizeLabel(value) {
+function normalizeSize(value) {
   const clean = cleanText(value);
+  return SIZE_VALUE_MAP[clean] || clean;
+}
+
+function shortSizeLabel(value) {
+  const clean = normalizeSize(value);
   return SIZE_SHORT_LABELS[clean] || clean;
 }
 
@@ -1046,7 +1076,7 @@ function readJsonArray(key, schemaVersion, resetMessage) {
 function normalizeJob(job, copyFallback = 1) {
   const source = job || {};
   const structured = hasStructuredFields(source);
-  const size = cleanText(source.size);
+  const size = normalizeSize(source.size);
   const strainType = validStrainType(cleanText(source.strain_type));
   const pricePreset = cleanText(source.price_preset);
   const priceInput = cleanText(source.price_input ?? source.price_amount ?? pricePreset);
