@@ -741,11 +741,19 @@ MOBILE_HTML = r"""
         <select id="price_preset">
           <option value="">Custom</option>
           <option value="$5.00">$5.00</option>
+          <option value="$6.00">$6.00</option>
           <option value="$10.00">$10.00</option>
+          <option value="$15.00">$15.00</option>
           <option value="$18.00">$18.00</option>
+          <option value="$20.00">$20.00</option>
           <option value="$25.00">$25.00</option>
+          <option value="$30.00">$30.00</option>
           <option value="$32.50">$32.50</option>
+          <option value="$40.00">$40.00</option>
           <option value="$50.00">$50.00</option>
+          <option value="$100.00">$100.00</option>
+          <option value="$125.00">$125.00</option>
+          <option value="$150.00">$150.00</option>
         </select>
       </div>
     </div>
