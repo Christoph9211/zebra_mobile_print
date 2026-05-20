@@ -653,7 +653,7 @@ MOBILE_HTML = r"""
     .offset-control { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
     .offset-control input { width: 110px; text-align: center; font-weight: 700; }
     .offset-btn { flex: 0 0 auto; font-size: 16px; padding: 10px 14px; background: #f2f2f2; border: 1px solid #ccc; }
-    .clear-history-btn, .small-action-btn { flex: 0 0 auto; font-size: 14px; padding: 8px 12px; border-radius: 10px; border: 1px solid #ccc; background: #f2f2f2; }
+    .small-action-btn { flex: 0 0 auto; font-size: 14px; padding: 8px 12px; border-radius: 10px; border: 1px solid #ccc; background: #f2f2f2; }
     #historyList { display: flex; flex-direction: column; gap: 10px; }
     .history-header { margin-top: 22px; }
     .history-item { border: 1px solid #ddd; border-radius: 12px; padding: 12px; background: #fafafa; }
@@ -796,7 +796,6 @@ MOBILE_HTML = r"""
 
     <div class="history-header">
       <h3 class="history-title">Recent Labels</h3>
-      <button id="clearHistoryBtn" class="clear-history-btn" type="button">Clear all history</button>
     </div>
     <div class="quick-toolbar">
       <input id="historySearch" placeholder="Search previous printed labels..." />
@@ -1451,12 +1450,6 @@ function renderHistory() {
   }
 }
 
-function clearAllHistory() {
-  localStorage.removeItem(HISTORY_KEY);
-  renderHistory();
-  setStatus('History cleared.');
-}
-
 async function generateZPL() {
   setStatus('Generating ZPL...');
   const job = jobPayload();
@@ -1525,7 +1518,6 @@ function nudgeOffset(delta) {
 
 document.getElementById('offsetUpBtn').addEventListener('click', () => nudgeOffset(1));
 document.getElementById('offsetDownBtn').addEventListener('click', () => nudgeOffset(-1));
-document.getElementById('clearHistoryBtn').addEventListener('click', clearAllHistory);
 document.getElementById('name').addEventListener('input', autofillStrainType);
 document.getElementById('price_preset').addEventListener('change', syncPriceFromPreset);
 document.getElementById('price').addEventListener('input', () => {
