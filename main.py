@@ -244,6 +244,18 @@ def send_raw_zpl(printer_name: str, zpl: str) -> int:
             win32print.ClosePrinter(h)
 
 
+def send_raw_zpl_direct(zpl: str) -> None:
+    target = f"{DIRECT_PRINTER_HOST}:{DIRECT_PRINTER_PORT}"
+    try:
+        with socket.create_connection(
+            (DIRECT_PRINTER_HOST, DIRECT_PRINTER_PORT),
+            timeout=DIRECT_PRINTER_TIMEOUT_SECONDS,
+        ) as sock:
+            sock.sendall(zpl.encode("ascii", errors="ignore"))
+    except Exception as exc:
+        raise RuntimeError(f"Direct TCP printer error for '{target}': {exc}") from exc
+
+
 def list_printers() -> list[str]:
     flags = win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
     return [p[2] for p in win32print.EnumPrinters(flags)]
@@ -374,6 +386,57 @@ def probe_direct_printer() -> dict[str, Any]:
         }
 
 
+def deliver_zpl(zpl: str, copies: int, printer: str) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "printer": printer,
+        "copies": copies,
+        "success": False,
+        "job_ids": [],
+        "path": "direct_tcp" if DIRECT_PRINTER_HOST else "windows_queue",
+        "target": f"{DIRECT_PRINTER_HOST}:{DIRECT_PRINTER_PORT}" if DIRECT_PRINTER_HOST else printer,
+        "fallback_from": "",
+        "fallback_error": "",
+        "error": "",
+    }
+
+    if DIRECT_PRINTER_HOST:
+        probe = probe_direct_printer()
+        if probe.get("ok"):
+            try:
+                for _ in range(copies):
+                    send_raw_zpl_direct(zpl)
+                result["success"] = True
+            except Exception as exc:
+                result["error"] = (
+                    f"{exc} Windows fallback was not attempted because direct transmission started; "
+                    "retry manually only after checking the printer."
+                )
+            return result
+
+        result["fallback_from"] = "direct_tcp"
+        result["fallback_error"] = probe.get("error") or "Direct TCP preflight failed."
+        if not printer:
+            result["error"] = (
+                f"Direct TCP preflight failed for {result['target']}: {result['fallback_error']} "
+                "No Windows fallback printer is configured."
+            )
+            return result
+        result["path"] = "windows_queue"
+        result["target"] = printer
+
+    if not printer:
+        result["error"] = "Printer not set. Set ZPL_PRINTER_NAME or choose a Windows printer in the UI."
+        return result
+
+    try:
+        for _ in range(copies):
+            result["job_ids"].append(send_raw_zpl(printer, zpl))
+        result["success"] = True
+    except Exception as exc:
+        result["error"] = str(exc)
+    return result
+
+
 # -----------------------
 # FastAPI
 # -----------------------
@@ -407,6 +470,9 @@ def health():
         "configured_default_printer": DEFAULT_PRINTER,
         "windows_default_printer": get_default_printer_name(),
         "direct_printer_configured": bool(DIRECT_PRINTER_HOST),
+        "direct_printer_host": DIRECT_PRINTER_HOST,
+        "direct_printer_port": DIRECT_PRINTER_PORT,
+        "print_route": "direct_tcp_with_windows_fallback" if DIRECT_PRINTER_HOST else "windows_queue",
     }
 
 
@@ -501,23 +567,6 @@ def make_zpl(job: PrintJob):
 
 @app.post("/print", response_class=PlainTextResponse)
 def print_label(job: PrintJob):
-    printer = (job.printer or DEFAULT_PRINTER or "").strip()
-    if not printer:
-        record_print_attempt(
-            {
-                "printer": "",
-                "copies": job.copies,
-                "success": False,
-                "job_ids": [],
-                "error": "Printer not set. Set ZPL_PRINTER_NAME env var or choose a printer in the UI.",
-                "source": "label",
-            }
-        )
-        return PlainTextResponse(
-            "Printer not set. Set ZPL_PRINTER_NAME env var or choose a printer in the UI.",
-            status_code=400,
-        )
-
     zpl = build_zpl_2x1_centered(
         name=job.name,
         price=job.price,
@@ -526,81 +575,36 @@ def print_label(job: PrintJob):
         darkness=job.darkness,
         vertical_offset=job.vertical_offset,
     )
+    result = deliver_zpl(zpl, job.copies, selected_printer_name(job.printer))
+    record_print_attempt({**result, "source": "label"})
+    if not result["success"]:
+        status_code = 400 if not result["target"] else 500
+        return PlainTextResponse(result["error"], status_code=status_code)
 
-    job_ids: list[int] = []
-    try:
-        for _ in range(job.copies):
-            job_ids.append(send_raw_zpl(printer, zpl))
-    except Exception as exc:
-        error = str(exc)
-        record_print_attempt(
-            {
-                "printer": printer,
-                "copies": job.copies,
-                "success": False,
-                "job_ids": job_ids,
-                "error": error,
-                "source": "label",
-            }
-        )
-        return PlainTextResponse(error, status_code=500)
-
-    record_print_attempt(
-        {
-            "printer": printer,
-            "copies": job.copies,
-            "success": True,
-            "job_ids": job_ids,
-            "error": "",
-            "source": "label",
-        }
+    fallback = (
+        f" after direct TCP preflight failed: {result['fallback_error']}"
+        if result["fallback_from"]
+        else ""
     )
-    return f"Printed {job.copies} copy/copies to: {printer}"
+    route = "direct TCP" if result["path"] == "direct_tcp" else "Windows queue"
+    return f"Printed {job.copies} copy/copies via {route} to {result['target']}{fallback}."
 
 
 @app.post("/diagnostics/test-print", response_class=PlainTextResponse)
 def diagnostics_test_print(job: TestPrintJob):
-    printer = selected_printer_name(job.printer)
-    if not printer:
-        record_print_attempt(
-            {
-                "printer": "",
-                "copies": 1,
-                "success": False,
-                "job_ids": [],
-                "error": "Printer not set. Choose a printer or set ZPL_PRINTER_NAME.",
-                "source": "test_label",
-            }
-        )
-        return PlainTextResponse("Printer not set. Choose a printer or set ZPL_PRINTER_NAME.", status_code=400)
+    result = deliver_zpl(build_test_zpl(), 1, selected_printer_name(job.printer))
+    record_print_attempt({**result, "source": "test_label"})
+    if not result["success"]:
+        status_code = 400 if not result["target"] else 500
+        return PlainTextResponse(result["error"], status_code=status_code)
 
-    try:
-        job_id = send_raw_zpl(printer, build_test_zpl())
-    except Exception as exc:
-        error = str(exc)
-        record_print_attempt(
-            {
-                "printer": printer,
-                "copies": 1,
-                "success": False,
-                "job_ids": [],
-                "error": error,
-                "source": "test_label",
-            }
-        )
-        return PlainTextResponse(error, status_code=500)
-
-    record_print_attempt(
-        {
-            "printer": printer,
-            "copies": 1,
-            "success": True,
-            "job_ids": [job_id],
-            "error": "",
-            "source": "test_label",
-        }
+    fallback = (
+        f" after direct TCP preflight failed: {result['fallback_error']}"
+        if result["fallback_from"]
+        else ""
     )
-    return f"Sent test label to: {printer}"
+    route = "direct TCP" if result["path"] == "direct_tcp" else "Windows queue"
+    return f"Sent test label via {route} to {result['target']}{fallback}."
 
 
 # -----------------------
@@ -689,9 +693,9 @@ MOBILE_HTML = r"""
   <div class="card">
     <h2 style="margin-top:0">Zebra ZD411 — Mobile Label Print (2×1)</h2>
 
-    <label>Printer</label>
+    <label>Windows printer queue</label>
     <select id="printer"></select>
-    <div class="small">If blank, go to /printers on this server to see what Windows calls your printer.</div>
+    <div id="routeHint" class="small">Checking the configured print route...</div>
 
     <div class="panel collapsible-panel">
       <button id="troubleshootingToggle" class="collapsible-trigger" type="button" aria-expanded="false" aria-controls="troubleshootingContent">
@@ -699,7 +703,7 @@ MOBILE_HTML = r"""
         <span id="troubleshootingChevron">Show</span>
       </button>
       <div id="troubleshootingContent" class="collapsible-content" hidden>
-        <div class="small">Run checks from this phone to see whether the web app, Windows spooler, queue, and optional Zebra network probe look healthy.</div>
+        <div class="small">Check the direct TCP primary path, Windows queue fallback, and the route used by recent prints.</div>
         <div class="diagnostic-actions">
           <button id="runDiagnosticsBtn" type="button">Run Diagnostics</button>
           <button id="testLabelBtn" type="button">Send Test Label</button>
@@ -896,8 +900,13 @@ function latestLogForPrinter(logs, printer) {
   return rows.find((row) => row && row.printer === printer) || rows[0] || null;
 }
 
-function diagnosticSuggestion(printerInfo, jobs, network, lastLog, printer) {
-  if (!printer) return 'Choose a printer, then run diagnostics again.';
+function diagnosticSuggestion(health, printerInfo, jobs, network, lastLog, printer) {
+  const directConfigured = !!(health.body && health.body.direct_printer_configured);
+  if (!printer && !directConfigured) return 'Choose a Windows printer, then run diagnostics again.';
+  if (directConfigured && network.body && !network.body.ok && !printer) return 'Direct TCP is unavailable and no Windows fallback queue is selected.';
+  if (lastLog && lastLog.success === false) return `Last print failed via ${lastLog.path || 'unknown path'}: ${lastLog.error || 'unknown error'}`;
+  if (directConfigured && network.body && !network.body.ok) return 'Direct TCP is unavailable. Printing will use the selected Windows fallback queue.';
+  if (!printer) return 'Direct TCP is ready; select a Windows queue if fallback is required.';
   if (!printerInfo.ok || !printerInfo.body.ok) return 'Windows cannot open this printer. Check the printer name, driver, and Windows printer list.';
   const flags = printerInfo.body.status_flags || [];
   const hardFlags = ['offline', 'paused', 'paper_out', 'paper_jam', 'door_open', 'user_intervention', 'error', 'not_available'];
@@ -906,10 +915,8 @@ function diagnosticSuggestion(printerInfo, jobs, network, lastLog, printer) {
   const jobRows = (jobs.body && jobs.body.jobs) || [];
   const stuckJob = jobRows.find((job) => (job.status_flags || []).some((flag) => ['error', 'offline', 'paperout', 'blocked_device_queue', 'user_intervention'].includes(flag)));
   if (stuckJob) return `Clear or restart spooler job ${stuckJob.id}; Windows reports ${stuckJob.status_flags.join(', ')}.`;
-  if (network.body && network.body.configured && !network.body.ok) return 'Windows may see the queue, but the direct Zebra network probe failed. Check printer IP, Wi-Fi, and power.';
-  if (lastLog && lastLog.success === false) return `Last print failed: ${lastLog.error || 'unknown error'}`;
   if (jobRows.length > 0) return 'Windows has active queued jobs. If labels are not moving, open the queue and clear stuck jobs.';
-  return 'No obvious server or Windows queue problem found. Send a test label to separate label content from printer hardware/media issues.';
+  return 'No obvious print-path problem found. Send a test label to verify printer hardware and media.';
 }
 
 function renderDiagnostics(results, printer) {
@@ -919,6 +926,7 @@ function renderDiagnostics(results, printer) {
 
   const { health, printers, printerInfo, jobs, logs, network } = results;
   const effectivePrinter = printer || (health.body && health.body.configured_default_printer) || '';
+  const directConfigured = !!(health.body && health.body.direct_printer_configured);
   addDiagnosticRow(summary, health.ok && health.body.ok ? 'ok' : 'bad', health.ok && health.body.ok ? 'Web app is reachable.' : `Web app health check failed: ${(health.body && health.body.error) || health.status}`);
 
   const printerCount = printers.body && Array.isArray(printers.body.printers) ? printers.body.printers.length : 0;
@@ -931,10 +939,10 @@ function renderDiagnostics(results, printer) {
   }
 
   if (!effectivePrinter) {
-    addDiagnosticRow(summary, 'warn', 'No printer is selected.');
+    addDiagnosticRow(summary, 'warn', directConfigured ? 'No Windows fallback queue is selected.' : 'No Windows printer queue is selected.');
   } else {
     if (!printer) {
-      addDiagnosticRow(summary, 'ok', `Using configured default printer: ${effectivePrinter}`);
+      addDiagnosticRow(summary, 'ok', `${directConfigured ? 'Windows fallback' : 'Configured default'} queue: ${effectivePrinter}`);
     }
     if (!printerInfo.ok || !printerInfo.body.ok) {
       addDiagnosticRow(summary, 'bad', `Selected printer could not be opened: ${(printerInfo.body && printerInfo.body.error) || printerInfo.status}`);
@@ -955,19 +963,21 @@ function renderDiagnostics(results, printer) {
   }
 
   if (network.body && network.body.configured) {
-    addDiagnosticRow(summary, network.body.ok ? 'ok' : 'warn', network.body.ok ? `Direct Zebra TCP probe reached ${network.body.host}:${network.body.port}.` : `Direct Zebra TCP probe failed: ${network.body.error || 'unknown error'}`);
+    addDiagnosticRow(summary, network.body.ok ? 'ok' : 'warn', network.body.ok ? `Direct TCP primary is reachable at ${network.body.host}:${network.body.port}.` : `Direct TCP primary failed; Windows fallback will be used when available: ${network.body.error || 'unknown error'}`);
   } else {
-    addDiagnosticRow(summary, 'warn', 'Direct Zebra network probe is not configured.');
+    addDiagnosticRow(summary, 'warn', 'Direct TCP is not configured; prints use the Windows queue.');
   }
 
   const lastLog = latestLogForPrinter(logs, effectivePrinter);
   if (lastLog) {
-    addDiagnosticRow(summary, lastLog.success ? 'ok' : 'bad', lastLog.success ? `Last print attempt succeeded at ${formatTimestamp(lastLog.timestamp)}.` : `Last print attempt failed at ${formatTimestamp(lastLog.timestamp)}: ${lastLog.error || 'unknown error'}`);
+    const route = lastLog.path === 'direct_tcp' ? 'direct TCP' : lastLog.path === 'windows_queue' ? 'Windows queue' : 'unknown path';
+    const fallback = lastLog.fallback_from ? ` Fallback reason: ${lastLog.fallback_error || 'direct TCP preflight failed'}.` : '';
+    addDiagnosticRow(summary, lastLog.success ? 'ok' : 'bad', lastLog.success ? `Last print succeeded via ${route} to ${lastLog.target || 'unknown target'} at ${formatTimestamp(lastLog.timestamp)}.${fallback}` : `Last print failed via ${route} at ${formatTimestamp(lastLog.timestamp)}: ${lastLog.error || 'unknown error'}`);
   } else {
     addDiagnosticRow(summary, 'warn', 'No print attempts have been logged since the server started.');
   }
 
-  addDiagnosticRow(summary, 'warn', diagnosticSuggestion(printerInfo, jobs, network, lastLog, effectivePrinter));
+  addDiagnosticRow(summary, 'warn', diagnosticSuggestion(health, printerInfo, jobs, network, lastLog, effectivePrinter));
 
   details.textContent = JSON.stringify({
     selected_printer: printer,
@@ -981,7 +991,7 @@ function renderDiagnostics(results, printer) {
   }, null, 2);
 }
 
-async function runDiagnostics() {
+async function runDiagnostics(finalMessage = 'Diagnostics complete.') {
   setTroubleshootingOpen(true);
   const printer = selectedPrinter();
   setStatus('Running diagnostics...');
@@ -995,7 +1005,7 @@ async function runDiagnostics() {
     fetchJson('/diagnostics/network'),
   ]);
   renderDiagnostics({ health, printers, printerInfo, jobs, logs, network }, printer);
-  setStatus('Diagnostics complete.');
+  setStatus(finalMessage);
 }
 
 async function sendTestLabel() {
@@ -1009,7 +1019,7 @@ async function sendTestLabel() {
   });
   const text = await res.text();
   setStatus(text);
-  await runDiagnostics();
+  await runDiagnostics(text);
 }
 
 function toInt(value, fallback) {
@@ -1108,6 +1118,18 @@ function normalizeJob(job, copyFallback = 1) {
     darkness: clampNumber(source.darkness ?? 20, LIMITS.darkness, 20),
     vertical_offset: clampNumber(source.vertical_offset ?? 0, LIMITS.vertical_offset, 0),
   };
+}
+
+async function loadRouteHint() {
+  const health = await fetchJson('/health');
+  const hint = document.getElementById('routeHint');
+  if (!health.ok || !health.body.ok) {
+    hint.textContent = 'Could not load print-route settings.';
+  } else if (health.body.direct_printer_configured) {
+    hint.textContent = `Primary: direct TCP ${health.body.direct_printer_host}:${health.body.direct_printer_port}. This Windows queue is used only if the TCP preflight fails.`;
+  } else {
+    hint.textContent = 'Primary: this Windows queue. Set ZPL_PRINTER_HOST to use direct TCP first.';
+  }
 }
 
 async function loadPrinters() {
@@ -1336,7 +1358,7 @@ function applyJobToForm(job, printer) {
   saveDefaults(jobPayload());
 }
 
-function recordHistory(job) {
+function recordHistory(job, result) {
   const normalized = normalizeJob(job);
   const fingerprint = jobFingerprint(normalized);
   const printer = normalized.printer || '';
@@ -1352,6 +1374,7 @@ function recordHistory(job) {
     ts: new Date().toISOString(),
     job: normalized,
     printer,
+    result,
   };
   deduped.unshift(record);
   writeHistory(deduped.slice(0, MAX_HISTORY));
@@ -1373,7 +1396,7 @@ async function printJob(job, copies, message) {
   const text = await res.text();
   setStatus(text);
   if (res.ok) {
-    recordHistory(payload);
+    recordHistory(payload, text);
     saveDefaults(payload);
   }
   return res.ok;
@@ -1406,7 +1429,7 @@ function renderHistory() {
 
     const meta = document.createElement('div');
     meta.className = 'history-meta';
-    meta.textContent = `Bottom: ${job.price || 'No bottom line'} | Warn: ${abbreviatedWarning(job.warning)} | ${formatTimestamp(entry.ts)} | Printer: ${entry.printer || 'Unknown'}`;
+    meta.textContent = `Bottom: ${job.price || 'No bottom line'} | Warn: ${abbreviatedWarning(job.warning)} | ${formatTimestamp(entry.ts)} | ${entry.result || `Windows printer: ${entry.printer || 'Unknown'}`}`;
 
     const actions = document.createElement('div');
     actions.className = 'history-actions';
@@ -1558,6 +1581,7 @@ for (const id of ['printer', 'strain_type', 'warning', 'include_warning', 'copie
   document.getElementById(id).addEventListener('change', () => saveDefaults(jobPayload()));
 }
 
+loadRouteHint();
 loadPrinters();
 renderHistory();
 </script>
