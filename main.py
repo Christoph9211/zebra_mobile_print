@@ -716,7 +716,7 @@ MOBILE_HTML = r"""
       <div>
         <label>Size</label>
         <select id="size">
-          <option value="">No size</option>
+          <option value="">Custom</option>
           <option value="1 gram">1 gram</option>
           <option value="2 gram">2 gram</option>
           <option value="3 gram">3 gram</option>
@@ -757,6 +757,9 @@ MOBILE_HTML = r"""
         </select>
       </div>
     </div>
+
+    <label>Custom size</label>
+    <input id="size_custom" placeholder="e.g. 3.5 grams or 10 pack" />
 
     <label>Custom price / note</label>
     <input id="price" placeholder="e.g. $10.00 or 2 for $15" />
@@ -1142,7 +1145,7 @@ function jobPayload() {
   return normalizeJob({
     printer: document.getElementById('printer').value || null,
     name: document.getElementById('name').value,
-    size: document.getElementById('size').value,
+    size: document.getElementById('size').value || document.getElementById('size_custom').value,
     strain_type: document.getElementById('strain_type').value,
     price_preset: document.getElementById('price_preset').value,
     price_input: document.getElementById('price').value,
@@ -1314,7 +1317,7 @@ function applyJobToForm(job, printer) {
   const normalized = normalizeJob(job);
 
   document.getElementById('name').value = normalized.name;
-  document.getElementById('size').value = normalized.size;
+  applySizeToForm(normalized.size);
   document.getElementById('strain_type').value = normalized.strain_type;
   document.getElementById('price_preset').value = normalized.price_preset;
   document.getElementById('price').value = normalized.price_input || normalized.price;
@@ -1506,6 +1509,28 @@ function syncPresetFromPrice() {
   preset.value = hasMatchingPreset ? price : '';
 }
 
+function applySizeToForm(value) {
+  const size = normalizeSize(value);
+  const preset = document.getElementById('size');
+  const hasMatchingPreset = !!size && Array.from(preset.options).some((opt) => opt.value === size);
+  preset.value = hasMatchingPreset ? size : '';
+  document.getElementById('size_custom').value = hasMatchingPreset ? '' : size;
+}
+
+function syncSizeFromPreset() {
+  if (document.getElementById('size').value) {
+    document.getElementById('size_custom').value = '';
+  }
+  saveDefaults(jobPayload());
+}
+
+function syncPresetFromSize() {
+  const size = normalizeSize(document.getElementById('size_custom').value);
+  const preset = document.getElementById('size');
+  const hasMatchingPreset = !!size && Array.from(preset.options).some((opt) => opt.value === size);
+  preset.value = hasMatchingPreset ? size : '';
+}
+
 function clampOffset(value) {
   return Math.max(-60, Math.min(60, value));
 }
@@ -1519,12 +1544,17 @@ function nudgeOffset(delta) {
 document.getElementById('offsetUpBtn').addEventListener('click', () => nudgeOffset(1));
 document.getElementById('offsetDownBtn').addEventListener('click', () => nudgeOffset(-1));
 document.getElementById('name').addEventListener('input', autofillStrainType);
+document.getElementById('size').addEventListener('change', syncSizeFromPreset);
+document.getElementById('size_custom').addEventListener('input', () => {
+  syncPresetFromSize();
+  saveDefaults(jobPayload());
+});
 document.getElementById('price_preset').addEventListener('change', syncPriceFromPreset);
 document.getElementById('price').addEventListener('input', () => {
   syncPresetFromPrice();
   saveDefaults(jobPayload());
 });
-for (const id of ['printer', 'size', 'strain_type', 'warning', 'include_warning', 'copies', 'darkness', 'vertical_offset']) {
+for (const id of ['printer', 'strain_type', 'warning', 'include_warning', 'copies', 'darkness', 'vertical_offset']) {
   document.getElementById(id).addEventListener('change', () => saveDefaults(jobPayload()));
 }
 
