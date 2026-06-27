@@ -708,11 +708,12 @@ def make_zpl(job: PrintJob):
 @app.post("/print", response_class=PlainTextResponse)
 def print_label(job: PrintJob):
     candidate = None
+    candidate_error = ""
     if job.website_draft:
         try:
             candidate = catalog_candidate(job)
         except ValueError as exc:
-            return PlainTextResponse(str(exc), status_code=400)
+            candidate_error = str(exc)
 
     zpl = build_zpl_2x1_centered(
         name=job.name,
@@ -741,6 +742,8 @@ def print_label(job: PrintJob):
             message += "\nAdded to website draft."
         except Exception as exc:
             message += f"\nLabel printed, draft not saved: {exc}. Do not reprint the label."
+    elif candidate_error:
+        message += f"\nLabel printed, draft not saved: {candidate_error}"
     return message
 
 

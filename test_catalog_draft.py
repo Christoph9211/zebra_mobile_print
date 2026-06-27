@@ -51,15 +51,16 @@ class CatalogDraftTests(unittest.TestCase):
             main.print_label(self.job())
         self.assertFalse(self.path.exists())
 
-    def test_invalid_flagged_draft_does_not_print(self):
-        with patch.object(main, "deliver_zpl") as deliver:
+    def test_invalid_flagged_draft_still_prints(self):
+        with patch.object(main, "deliver_zpl", return_value=successful_delivery()) as deliver:
             response = main.print_label(self.job(price_input="2 for $15"))
-        self.assertEqual(response.status_code, 400)
+        self.assertIn("Label printed, draft not saved", response)
+        deliver.assert_called_once()
 
-        with patch.object(main, "deliver_zpl") as deliver:
+        with patch.object(main, "deliver_zpl", return_value=successful_delivery()) as deliver:
             response = main.print_label(self.job(category="Other", catalog_group=""))
-        self.assertEqual(response.status_code, 400)
-        deliver.assert_not_called()
+        self.assertIn("Label printed, draft not saved", response)
+        deliver.assert_called_once()
 
     def test_storage_failure_reports_that_the_label_printed(self):
         with (
