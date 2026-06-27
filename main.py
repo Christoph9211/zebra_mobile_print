@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 import win32print  # pip install pywin32
 
@@ -28,22 +28,34 @@ DIRECT_PRINTER_HOST = os.environ.get("ZPL_PRINTER_HOST", "").strip()
 DIRECT_PRINTER_PORT = int(os.environ.get("ZPL_PRINTER_PORT", "9100"))
 DIRECT_PRINTER_TIMEOUT_SECONDS = float(os.environ.get("ZPL_PRINTER_TIMEOUT_SECONDS", "2.0"))
 
-DEFAULT_WARNING = """THCa PRODUCT
+DEFAULT_WARNING = """THCA PRODUCT • HEMP-DERIVED
+Contains less than 0.3% Δ9 THC.
+21+ only. Keep out of reach of children.
+May cause intoxication when heated.
+Do not use while driving or operating heavy machinery.
+Consult a physician before use."""
 
-HEMP-DERIVED PRODUCT-CONTAINS LESS THAN 0.3% DELTA-9 THC
-
-21+ ONLY KEEP OUT OF REACH OF CHILDREN
-
-THIS PRODUCT MAY CAUSE INTOXICATION WHEN HEATED
-
-DO NOT USE WHILE DRIVING OR OPERATING HEAVY MACHINERY
-
-CONSULT A PHYSICIAN BEFORE USE"""
-
-# 2x1 @ 203dpi -> 406x203 dots
-LABEL_WIDTH_DOTS = 406
-LABEL_HEIGHT_DOTS = 203
-LABEL_Y_OFFSET = 6
+# 2x1 @ 203dpi -> 406x203 dots; use 609x203 for 3x1 media.
+LABEL_WIDTH_DOTS = int(os.environ.get("ZPL_LABEL_WIDTH_DOTS", "406"))
+LABEL_HEIGHT_DOTS = int(os.environ.get("ZPL_LABEL_HEIGHT_DOTS", "203"))
+LABEL_Y_OFFSET = int(os.environ.get("ZPL_LABEL_Y_OFFSET", "6"))
+LABEL_MARGIN_DOTS = 16
+SECTION_GAP_DOTS = 3
+HEADER_SECTION_HEIGHT_DOTS = 40
+DETAILS_SECTION_HEIGHT_DOTS = 13
+PRICE_SECTION_HEIGHT_DOTS = 55
+TITLE_FONT_MAX_DOTS = 23
+TITLE_FONT_MIN_DOTS = 10
+SUBTITLE_FONT_DOTS = 13
+DETAILS_FONT_DOTS = 12
+PROMO_FONT_DOTS = 10
+PRICE_FONT_MAX_DOTS = 29
+PRICE_FONT_MIN_DOTS = 10
+OLD_PRICE_FONT_DOTS = 11
+WARNING_FONT_HEIGHT_DOTS = 11
+WARNING_FONT_WIDTH_DOTS = 9
+WARNING_CHAR_WIDTH_DOTS = 6
+WARNING_MAX_LINES = 4
 PRINT_LOG_LIMIT = 50
 PRINT_ATTEMPT_LOG: deque[dict[str, Any]] = deque(maxlen=PRINT_LOG_LIMIT)
 
@@ -54,28 +66,77 @@ PRINT_ATTEMPT_LOG: deque[dict[str, Any]] = deque(maxlen=PRINT_LOG_LIMIT)
 def zpl_escape(s: str) -> str:
     if s is None:
         return ""
-    return str(s).replace("^", "").replace("~", "").strip()
+    text = str(s).replace("•", "-").replace("Δ", "DELTA-")
+    return text.replace("^", "").replace("~", "").encode("ascii", errors="ignore").decode("ascii").strip()
+
+
+def wrap_text_to_width(s: str, width_dots: int, char_width_dots: int, max_lines: int) -> str:
+    if not s:
+        return ""
+    max_chars = max(1, width_dots // max(char_width_dots, 1))
+    lines = textwrap.wrap(
+        " ".join(zpl_escape(s).split()),
+        width=max_chars,
+        break_long_words=True,
+        break_on_hyphens=True,
+    )
+    return r"\&".join(lines[:max_lines])
 
 
 def format_warning_lines(s: str, max_chars: int = 38, max_lines: int = 9) -> str:
-    if s is None:
-        return ""
-    raw = str(s).replace("\r\n", "\n").replace("\r", "\n")
-    paragraphs = [p.strip() for p in raw.split("\n") if p.strip()]
-    lines: list[str] = []
-    for paragraph in paragraphs:
-        wrapped = textwrap.wrap(
-            zpl_escape(paragraph),
-            width=max_chars,
-            break_long_words=True,
-            break_on_hyphens=True,
-        )
-        lines.extend(wrapped or [""])
-        if len(lines) >= max_lines:
-            break
+    return wrap_text_to_width(s, max_chars, 1, max_lines)
 
-    lines = lines[:max_lines]
-    return r"\&".join(lines)
+
+def fitted_font_size(text: str, maximum: int, minimum: int, width_dots: int) -> int:
+    # ponytail: approximate Zebra's proportional font; use printer font metrics if long text still clips.
+    return max(minimum, min(maximum, (width_dots * 3 // 2) // max(len(text), 1)))
+
+
+def format_product_details(size: str, strain_type: str) -> str:
+    size = zpl_escape(size)
+    size = {"1 gram": "1g", "2 gram": "2g", "3 gram": "3g"}.get(size, size)
+    return " - ".join(filter(None, (size, zpl_escape(strain_type).upper())))
+
+
+def build_label_sections() -> dict[str, dict[str, int]]:
+    """Allocate the label vertically; warning gets every remaining safe dot."""
+    header_top = LABEL_MARGIN_DOTS
+    details_top = header_top + HEADER_SECTION_HEIGHT_DOTS + SECTION_GAP_DOTS
+    price_top = details_top + DETAILS_SECTION_HEIGHT_DOTS + SECTION_GAP_DOTS
+    warning_top = price_top + PRICE_SECTION_HEIGHT_DOTS + SECTION_GAP_DOTS
+    return {
+        "headerSection": {"top": header_top, "height": HEADER_SECTION_HEIGHT_DOTS},
+        "detailsSection": {"top": details_top, "height": DETAILS_SECTION_HEIGHT_DOTS},
+        "priceSection": {"top": price_top, "height": PRICE_SECTION_HEIGHT_DOTS},
+        "warningSection": {
+            "top": warning_top,
+            "height": max(0, LABEL_HEIGHT_DOTS - LABEL_MARGIN_DOTS - warning_top),
+        },
+    }
+
+
+def draw_centered_text(text: str, y: int, font_height: int, font_width: Optional[int] = None) -> list[str]:
+    if not text:
+        return []
+    printable_width = LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2)
+    return [
+        f"^FO{LABEL_MARGIN_DOTS},{y}",
+        f"^FB{printable_width},1,0,C,0",
+        f"^A0N,{font_height},{font_width or font_height}",
+        f"^FD{zpl_escape(text)}^FS",
+    ]
+
+
+def draw_strikethrough_text(text: str, y: int, font_height: int) -> list[str]:
+    text = zpl_escape(text)
+    printable_width = LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2)
+    strike_width = min(printable_width, max(70, len(text) * 8))
+    strike_x = LABEL_MARGIN_DOTS + ((printable_width - strike_width) // 2)
+    return [
+        *draw_centered_text(text, y, font_height),
+        f"^FO{strike_x},{y + (font_height // 2)}",
+        f"^GB{strike_width},2,2^FS",
+    ]
 
 
 def build_zpl_2x1_centered(
@@ -85,41 +146,88 @@ def build_zpl_2x1_centered(
     include_warning: bool,
     darkness: int = 20,
     vertical_offset: int = 0,
+    marked_down: bool = False,
+    original_price: str = "",
+    subtitle: str = "",
+    size: str = "",
+    strain_type: str = "",
+    price_input: str = "",
 ) -> str:
     """
-    Centered 2x1 label tuned for product + price + warning.
+    Retail-style 2x1 label tuned for product + price + warning.
     """
-    name = zpl_escape(name)
-    price = zpl_escape(price)
-    warning = format_warning_lines(warning)
+    name = zpl_escape(name).upper()
+    subtitle = zpl_escape(subtitle)
+    details = format_product_details(size, strain_type)
+    display_price = zpl_escape(price_input) or zpl_escape(price)
+    original_price = zpl_escape(original_price)
+    printable_width = LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2)
+    warning = wrap_text_to_width(
+        warning,
+        width_dots=printable_width,
+        char_width_dots=WARNING_CHAR_WIDTH_DOTS,
+        max_lines=WARNING_MAX_LINES,
+    )
+    title_font = fitted_font_size(
+        name,
+        maximum=TITLE_FONT_MAX_DOTS,
+        minimum=TITLE_FONT_MIN_DOTS,
+        width_dots=printable_width,
+    )
+    price_font = fitted_font_size(
+        display_price,
+        maximum=PRICE_FONT_MAX_DOTS,
+        minimum=PRICE_FONT_MIN_DOTS,
+        width_dots=printable_width,
+    )
     # Positive values move content up; negative values move content down.
     y_offset = LABEL_Y_OFFSET - vertical_offset
+    sections = build_label_sections()
+    header_section = sections["headerSection"]
+    details_section = sections["detailsSection"]
+    price_section = sections["priceSection"]
+    warning_section = sections["warningSection"]
 
-    z = []
-    z += ["^XA"]
-    z += [f"^PW{LABEL_WIDTH_DOTS}"]
-    z += [f"^LL{LABEL_HEIGHT_DOTS}"]
-    z += [f"^MD{darkness}"]
+    z = ["^XA", f"^PW{LABEL_WIDTH_DOTS}", f"^LL{LABEL_HEIGHT_DOTS}", f"^MD{darkness}"]
 
-    # Name
-    z += [f"^FO8,{8 + y_offset}"]
-    z += [f"^FB{LABEL_WIDTH_DOTS-16},2,2,C,0"]
-    z += ["^A0N,20,20"]
-    z += [f"^FD{name}^FS"]
+    # Header: large title stays below the rounded-corner/non-printable area.
+    z += draw_centered_text(name, header_section["top"] + y_offset, title_font)
+    if subtitle:
+        z += draw_centered_text(
+            subtitle,
+            header_section["top"] + 25 + y_offset,
+            SUBTITLE_FONT_DOTS,
+        )
 
-    # Price
-    z += [f"^FO8,{56 + y_offset}"]
-    z += [f"^FB{LABEL_WIDTH_DOTS-16},1,0,C,0"]
-    z += ["^A0N,22,22"]
-    z += [f"^FD{price}^FS"]
+    # Details: weight and strain get their own full-width line.
+    if details:
+        z += draw_centered_text(details, details_section["top"] + y_offset, DETAILS_FONT_DOTS)
 
-    # Warning (optional)
+    # Price: monochrome hierarchy carries the meaning; no color is required.
+    if marked_down:
+        z += draw_centered_text(
+            "PRICE REDUCED",
+            price_section["top"] + y_offset,
+            PROMO_FONT_DOTS,
+        )
+    z += draw_centered_text(
+        display_price,
+        price_section["top"] + 12 + y_offset,
+        price_font,
+    )
+    if marked_down:
+        z += draw_strikethrough_text(
+            f"WAS {original_price}",
+            price_section["top"] + 43 + y_offset,
+            OLD_PRICE_FONT_DOTS,
+        )
+
+    # Warning: flatten paragraphs and wrap by printable dot width to use the full label.
     if include_warning and warning:
-        z += [f"^FO10,{86 + y_offset}"]
-        z += [f"^GB{LABEL_WIDTH_DOTS-20},1,1^FS"]
-        z += [f"^FO10,{94 + y_offset}"]
-        z += [f"^FB{LABEL_WIDTH_DOTS-20},9,1,C,0"]
-        z += ["^A0N,10,10"]
+        warning_lines = min(WARNING_MAX_LINES, warning_section["height"] // WARNING_FONT_HEIGHT_DOTS)
+        z += [f"^FO{LABEL_MARGIN_DOTS},{warning_section['top'] + y_offset}"]
+        z += [f"^FB{printable_width},{warning_lines},0,L,0"]
+        z += [f"^A0N,{WARNING_FONT_HEIGHT_DOTS},{WARNING_FONT_WIDTH_DOTS}"]
         z += [f"^FD{warning}^FS"]
 
     z += ["^XZ"]
@@ -452,6 +560,18 @@ class PrintJob(BaseModel):
     copies: int = Field(default=1, ge=1, le=200)
     darkness: int = Field(default=20, ge=0, le=30)
     vertical_offset: int = Field(default=0, ge=-60, le=60, description="Shift label content in dots: positive up, negative down")
+    marked_down: bool = Field(default=False)
+    original_price: str = Field(default="")
+    subtitle: str = Field(default="")
+    size: str = Field(default="")
+    strain_type: str = Field(default="")
+    price_input: str = Field(default="")
+
+    @model_validator(mode="after")
+    def require_original_price_for_markdown(self):
+        if self.marked_down and not self.original_price.strip():
+            raise ValueError("Original price is required for a marked-down label.")
+        return self
 
 
 class TestPrintJob(BaseModel):
@@ -561,6 +681,12 @@ def make_zpl(job: PrintJob):
         include_warning=job.include_warning,
         darkness=job.darkness,
         vertical_offset=job.vertical_offset,
+        marked_down=job.marked_down,
+        original_price=job.original_price,
+        subtitle=job.subtitle,
+        size=job.size,
+        strain_type=job.strain_type,
+        price_input=job.price_input,
     )
     return zpl
 
@@ -574,6 +700,12 @@ def print_label(job: PrintJob):
         include_warning=job.include_warning,
         darkness=job.darkness,
         vertical_offset=job.vertical_offset,
+        marked_down=job.marked_down,
+        original_price=job.original_price,
+        subtitle=job.subtitle,
+        size=job.size,
+        strain_type=job.strain_type,
+        price_input=job.price_input,
     )
     result = deliver_zpl(zpl, job.copies, selected_printer_name(job.printer))
     record_print_attempt({**result, "source": "label"})
@@ -713,8 +845,11 @@ MOBILE_HTML = r"""
       </div>
     </div>
 
-    <label>Strain / item name (top)</label>
-    <input id="name" placeholder="e.g. Cherry Pie" autocomplete="off" />
+    <label>Product name (short title)</label>
+    <input id="name" placeholder="e.g. Peach Ringz" autocomplete="off" />
+
+    <label>Product subtitle (optional)</label>
+    <input id="subtitle" placeholder="e.g. Cold Cure Live Rosin" autocomplete="off" />
 
     <div class="row three">
       <div>
@@ -765,9 +900,20 @@ MOBILE_HTML = r"""
     <label>Custom size</label>
     <input id="size_custom" placeholder="e.g. 3.5 grams or 10 pack" />
 
-    <label>Custom price / note</label>
+    <label id="priceLabel" for="price">Custom price / note</label>
     <input id="price" placeholder="e.g. $10.00 or 2 for $15" />
-    <div class="small">Bottom line prints size, type, and price, for example: 3.5g Hybrid - $25.00.</div>
+    <div class="small">The label prints size and type separately, with this price as the largest text.</div>
+
+    <div class="toggle">
+      <input type="checkbox" id="marked_down" aria-controls="markedDownFields" aria-expanded="false" />
+      <label for="marked_down" style="margin:0; font-weight:600;">Marked down price</label>
+    </div>
+
+    <div id="markedDownFields" hidden>
+      <label for="original_price">Original price</label>
+      <input id="original_price" placeholder="e.g. $30.00" />
+      <div class="small">The label will show “PRICE REDUCED” with the original price struck out below.</div>
+    </div>
 
     <label>Health warning (optional)</label>
     <textarea id="warning" placeholder="Paste your required warning here...">__DEFAULT_WARNING__</textarea>
@@ -1101,17 +1247,21 @@ function normalizeJob(job, copyFallback = 1) {
   const pricePreset = cleanText(source.price_preset);
   const priceInput = cleanText(source.price_input ?? source.price_amount ?? pricePreset);
   const legacyPrice = String(source.price || '');
+  const markedDown = source.marked_down === true;
   const printablePrice = structured
     ? composeBottomLine(size, strainType, priceInput || pricePreset || legacyPrice)
     : legacyPrice;
   return {
     printer: source.printer || null,
     name: String(source.name || ''),
+    subtitle: cleanText(source.subtitle),
     price: printablePrice,
     size,
     strain_type: strainType,
     price_preset: pricePreset,
     price_input: priceInput,
+    marked_down: markedDown,
+    original_price: cleanText(source.original_price),
     warning: String(source.warning || ''),
     include_warning: source.include_warning !== false,
     copies: clampNumber(source.copies ?? copyFallback, LIMITS.copies, copyFallback),
@@ -1167,10 +1317,13 @@ function jobPayload() {
   return normalizeJob({
     printer: document.getElementById('printer').value || null,
     name: document.getElementById('name').value,
+    subtitle: document.getElementById('subtitle').value,
     size: document.getElementById('size').value || document.getElementById('size_custom').value,
     strain_type: document.getElementById('strain_type').value,
     price_preset: document.getElementById('price_preset').value,
     price_input: document.getElementById('price').value,
+    marked_down: document.getElementById('marked_down').checked,
+    original_price: document.getElementById('original_price').value,
     warning: document.getElementById('warning').value,
     include_warning: document.getElementById('include_warning').checked,
     copies: document.getElementById('copies').value,
@@ -1234,11 +1387,14 @@ function restoreDefaultsToForm() {
 function jobFingerprint(job) {
   return JSON.stringify({
     name: job.name ?? '',
+    subtitle: job.subtitle ?? '',
     price: job.price ?? '',
     size: job.size ?? '',
     strain_type: job.strain_type ?? '',
     price_preset: job.price_preset ?? '',
     price_input: job.price_input ?? '',
+    marked_down: job.marked_down === true,
+    original_price: job.original_price ?? '',
     warning: job.warning ?? '',
     include_warning: !!job.include_warning,
     darkness: Number(job.darkness ?? 0),
@@ -1318,10 +1474,13 @@ function jobSearchText(job, entry) {
   const normalized = normalizeJob(job || {});
   return [
     normalized.name,
+    normalized.subtitle,
     normalized.price,
     normalized.size,
     normalized.strain_type,
     normalized.price_input,
+    normalized.original_price,
+    normalized.marked_down ? 'marked down' : '',
     normalized.warning,
     entry && entry.printer,
     entry && formatTimestamp(entry.ts),
@@ -1339,10 +1498,14 @@ function applyJobToForm(job, printer) {
   const normalized = normalizeJob(job);
 
   document.getElementById('name').value = normalized.name;
+  document.getElementById('subtitle').value = normalized.subtitle;
   applySizeToForm(normalized.size);
   document.getElementById('strain_type').value = normalized.strain_type;
   document.getElementById('price_preset').value = normalized.price_preset;
   document.getElementById('price').value = normalized.price_input || normalized.price;
+  document.getElementById('marked_down').checked = normalized.marked_down;
+  document.getElementById('original_price').value = normalized.original_price;
+  updateMarkedDownUI();
   document.getElementById('warning').value = normalized.warning;
   document.getElementById('include_warning').checked = normalized.include_warning;
   document.getElementById('copies').value = String(normalized.copies);
@@ -1382,6 +1545,9 @@ function recordHistory(job, result) {
 }
 
 async function printJob(job, copies, message) {
+  if (!validateJob(job)) {
+    return false;
+  }
   setStatus(message || `Printing ${copies} copy/copies...`);
   const payload = {
     ...normalizeJob(job, copies),
@@ -1425,11 +1591,13 @@ function renderHistory() {
 
     const main = document.createElement('div');
     main.className = 'history-main';
-    main.textContent = `${job.name || '(Unnamed item)'} — ${job.price || '(No price)'}`;
+    const subtitle = job.subtitle ? ` — ${job.subtitle}` : '';
+    main.textContent = `${job.name || '(Unnamed item)'}${subtitle} — ${job.price_input || job.price || '(No price)'}`;
 
     const meta = document.createElement('div');
     meta.className = 'history-meta';
-    meta.textContent = `Bottom: ${job.price || 'No bottom line'} | Warn: ${abbreviatedWarning(job.warning)} | ${formatTimestamp(entry.ts)} | ${entry.result || `Windows printer: ${entry.printer || 'Unknown'}`}`;
+    const markdownMeta = job.marked_down ? `Marked down from ${job.original_price} | ` : '';
+    meta.textContent = `${markdownMeta}Price: ${job.price_input || job.price || 'No price'} | Warn: ${abbreviatedWarning(job.warning)} | ${formatTimestamp(entry.ts)} | ${entry.result || `Windows printer: ${entry.printer || 'Unknown'}`}`;
 
     const actions = document.createElement('div');
     actions.className = 'history-actions';
@@ -1477,8 +1645,11 @@ function renderHistory() {
 }
 
 async function generateZPL() {
-  setStatus('Generating ZPL...');
   const job = jobPayload();
+  if (!validateJob(job)) {
+    return;
+  }
+  setStatus('Generating ZPL...');
   const res = await fetch('/zpl', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -1532,6 +1703,27 @@ function syncPresetFromPrice() {
   preset.value = hasMatchingPreset ? price : '';
 }
 
+function updateMarkedDownUI(focusOriginalPrice = false) {
+  const markedDown = document.getElementById('marked_down');
+  const enabled = markedDown.checked;
+  document.getElementById('markedDownFields').hidden = !enabled;
+  document.getElementById('priceLabel').textContent = enabled ? 'New price / note' : 'Custom price / note';
+  markedDown.setAttribute('aria-expanded', String(enabled));
+  if (enabled && focusOriginalPrice) {
+    document.getElementById('original_price').focus();
+  }
+}
+
+function validateJob(job) {
+  const normalized = normalizeJob(job);
+  if (normalized.marked_down && !normalized.original_price) {
+    setStatus('Enter the original price for this marked-down label.');
+    document.getElementById('original_price').focus();
+    return false;
+  }
+  return true;
+}
+
 function applySizeToForm(value) {
   const size = normalizeSize(value);
   const preset = document.getElementById('size');
@@ -1577,10 +1769,14 @@ document.getElementById('price').addEventListener('input', () => {
   syncPresetFromPrice();
   saveDefaults(jobPayload());
 });
+document.getElementById('marked_down').addEventListener('change', (event) => {
+  updateMarkedDownUI(event.target.checked);
+});
 for (const id of ['printer', 'strain_type', 'warning', 'include_warning', 'copies', 'darkness', 'vertical_offset']) {
   document.getElementById(id).addEventListener('change', () => saveDefaults(jobPayload()));
 }
 
+updateMarkedDownUI();
 loadRouteHint();
 loadPrinters();
 renderHistory();
