@@ -28,6 +28,12 @@ http://100.78.175.1:8787
 
 Remote users can use the web app diagnostics over Tailscale, but the reset shortcut is intentionally local to the office PC.
 
+## Website Catalog Draft
+
+Check **Add/update website draft** before printing to queue that successful label for the website. Use **Download Website Draft**, merge the downloaded JSON in `tools/json_gen_v_2_FINAL.html`, review optional metadata, and export the final `products.json`. Run the existing Clover reconciliation before publishing so Clover remains authoritative for prices and availability.
+
+The append-only queue is stored in ignored `data/catalog-draft.jsonl`. Set `ZPL_CATALOG_DRAFT_PATH` only if the office PC needs a different local path.
+
 ## Troubleshooting Notes
 
 - Set `ZPL_PRINTER_HOST` to the Zebra printer IP or hostname to make direct TCP the primary print path. Port `9100` is used by default; override it with `ZPL_PRINTER_PORT`.

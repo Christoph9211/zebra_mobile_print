@@ -1,16 +1,22 @@
 import html
+import json
 import os
+import re
 import socket
 import textwrap
 import time
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, Query
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
+import msvcrt
 import win32print  # pip install pywin32
 
 
@@ -46,6 +52,135 @@ LABEL_HEIGHT_DOTS = 203
 LABEL_Y_OFFSET = 6
 PRINT_LOG_LIMIT = 50
 PRINT_ATTEMPT_LOG: deque[dict[str, Any]] = deque(maxlen=PRINT_LOG_LIMIT)
+CATALOG_DRAFT_PATH = Path(os.environ.get("ZPL_CATALOG_DRAFT_PATH", "data/catalog-draft.jsonl"))
+GROUPED_CATEGORIES = {"vapes & carts", "other"}
+PRICE_PATTERN = re.compile(r"^\$?\s*\d+(?:\.\d{1,2})?$")
+CATALOG_SIZE_MAP = {
+    "1 gram": "1 gram",
+    "2 gram": "2 grams",
+    "2 grams": "2 grams",
+    "3 gram": "3 grams",
+    "3 grams": "3 grams",
+    "3.5 gram": "3.5 grams",
+    "3.5 grams": "3.5 grams",
+    "1/8 oz": "1/8 oz",
+    "1/4 oz": "1/4 oz",
+    "1 oz": "1 oz",
+}
+
+
+def canonical_catalog_size(value: str) -> str:
+    clean = " ".join(str(value or "").split())
+    return CATALOG_SIZE_MAP.get(clean.casefold(), clean)
+
+
+def catalog_price(value: str) -> int | float:
+    clean = str(value or "").strip()
+    if not PRICE_PATTERN.fullmatch(clean):
+        raise ValueError("Website draft price must be a number such as 25 or $25.99.")
+    try:
+        price = Decimal(clean.replace("$", "").strip())
+    except InvalidOperation as exc:
+        raise ValueError("Website draft price must be a number such as 25 or $25.99.") from exc
+    return int(price) if price == price.to_integral() else float(price)
+
+
+def catalog_candidate(job: "PrintJob") -> dict[str, Any]:
+    name = job.name.strip()
+    category = job.category.strip()
+    size = canonical_catalog_size(job.size)
+    group = job.catalog_group.strip()
+    if not name:
+        raise ValueError("Website draft requires an item name.")
+    if not category:
+        raise ValueError("Website draft requires a category.")
+    if not size:
+        raise ValueError("Website draft requires a size.")
+    if category.casefold() in GROUPED_CATEGORIES and not group:
+        raise ValueError(f"Website draft requires a parent product/group for {category}.")
+    return {
+        "timestamp": now_iso(),
+        "name": name,
+        "category": category,
+        "catalog_group": group,
+        "size": size,
+        "price": catalog_price(job.price_input),
+    }
+
+
+@contextmanager
+def catalog_draft_lock(path: Path):
+    lock_path = Path(f"{path}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock:
+        lock.seek(0, os.SEEK_END)
+        if lock.tell() == 0:
+            lock.write(b"0")
+            lock.flush()
+        lock.seek(0)
+        msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+        try:
+            yield
+        finally:
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def append_catalog_candidate(candidate: dict[str, Any], path: Path = CATALOG_DRAFT_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with catalog_draft_lock(path), path.open("a", encoding="utf-8") as draft:
+        draft.write(json.dumps(candidate, ensure_ascii=False) + "\n")
+
+
+def read_catalog_candidates(path: Path = CATALOG_DRAFT_PATH) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    with catalog_draft_lock(path):
+        lines = path.read_text(encoding="utf-8").splitlines()
+    candidates = []
+    for line in lines:
+        try:
+            candidate = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(candidate, dict):
+            candidates.append(candidate)
+    return candidates
+
+
+def build_catalog_draft(path: Path = CATALOG_DRAFT_PATH) -> list[dict[str, Any]]:
+    products: dict[tuple[str, str], dict[str, Any]] = {}
+    for candidate in read_catalog_candidates(path):
+        try:
+            name = str(candidate["name"]).strip()
+            category = str(candidate["category"]).strip()
+            grouped = category.casefold() in GROUPED_CATEGORIES
+            product_name = str(candidate.get("catalog_group") or "").strip() if grouped else name
+            option = name if grouped else canonical_catalog_size(str(candidate["size"]))
+            price = candidate["price"]
+            if not product_name or not category or not option or isinstance(price, bool) or not isinstance(price, (int, float)):
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        key = (product_name.casefold(), category.casefold())
+        product = products.setdefault(
+            key,
+            {"name": product_name, "category": category, "_variants": {}},
+        )
+        product["name"] = product_name
+        product["category"] = category
+        product["_variants"][option.casefold()] = (option, price)
+
+    return [
+        {
+            "name": product["name"],
+            "category": product["category"],
+            "size_options": [option for option, _ in product["_variants"].values()],
+            "prices": {option: price for option, price in product["_variants"].values()},
+        }
+        for product in products.values()
+    ]
 
 
 # -----------------------
@@ -447,6 +582,11 @@ class PrintJob(BaseModel):
     printer: Optional[str] = Field(default=None, description="Windows printer name (optional)")
     name: str = Field(default="", description="Top text")
     price: str = Field(default="", description="Bottom text")
+    category: str = Field(default="", description="Website category")
+    catalog_group: str = Field(default="", description="Website parent product/group")
+    size: str = Field(default="", description="Structured label size")
+    price_input: str = Field(default="", description="Structured label price")
+    website_draft: bool = Field(default=False, description="Add this successful print to the website draft")
     warning: str = Field(default=DEFAULT_WARNING, description="Health warning block")
     include_warning: bool = Field(default=True)
     copies: int = Field(default=1, ge=1, le=200)
@@ -567,6 +707,13 @@ def make_zpl(job: PrintJob):
 
 @app.post("/print", response_class=PlainTextResponse)
 def print_label(job: PrintJob):
+    candidate = None
+    if job.website_draft:
+        try:
+            candidate = catalog_candidate(job)
+        except ValueError as exc:
+            return PlainTextResponse(str(exc), status_code=400)
+
     zpl = build_zpl_2x1_centered(
         name=job.name,
         price=job.price,
@@ -587,7 +734,22 @@ def print_label(job: PrintJob):
         else ""
     )
     route = "direct TCP" if result["path"] == "direct_tcp" else "Windows queue"
-    return f"Printed {job.copies} copy/copies via {route} to {result['target']}{fallback}."
+    message = f"Printed {job.copies} copy/copies via {route} to {result['target']}{fallback}."
+    if candidate:
+        try:
+            append_catalog_candidate(candidate, CATALOG_DRAFT_PATH)
+            message += "\nAdded to website draft."
+        except Exception as exc:
+            message += f"\nLabel printed, draft not saved: {exc}. Do not reprint the label."
+    return message
+
+
+@app.get("/catalog-draft")
+def catalog_draft():
+    return JSONResponse(
+        build_catalog_draft(CATALOG_DRAFT_PATH),
+        headers={"Content-Disposition": 'attachment; filename="catalog-draft.json"'},
+    )
 
 
 @app.post("/diagnostics/test-print", response_class=PlainTextResponse)
@@ -650,6 +812,7 @@ MOBILE_HTML = r"""
     .btnrow button { flex: 1; }
     #printBtn { background: #111; color: #fff; }
     #zplBtn { background: #f2f2f2; }
+    .download-btn { display: block; margin-top: 12px; padding: 12px; border: 1px solid #ccc; border-radius: 12px; background: #f2f2f2; color: #1f1f1f; text-align: center; text-decoration: none; font-weight: 600; }
     #status { margin-top: 12px; white-space: pre-wrap; }
     .small { font-size: 13px; color: #666; margin-top: 6px; }
     .toggle { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
@@ -768,6 +931,29 @@ MOBILE_HTML = r"""
     <label>Custom price / note</label>
     <input id="price" placeholder="e.g. $10.00 or 2 for $15" />
     <div class="small">Bottom line prints size, type, and price, for example: 3.5g Hybrid - $25.00.</div>
+
+    <div class="panel">
+      <h3 class="panel-title">Website draft</h3>
+      <label>Website category</label>
+      <select id="category">
+        <option value="">Choose a category</option>
+        <option value="Concentrates">Concentrates</option>
+        <option value="Diamonds & Sauce">Diamonds &amp; Sauce</option>
+        <option value="Edibles">Edibles</option>
+        <option value="Flower">Flower</option>
+        <option value="Other">Other</option>
+        <option value="Vapes & Carts">Vapes &amp; Carts</option>
+      </select>
+      <div id="catalogGroupFields" hidden>
+        <label>Parent product / group</label>
+        <input id="catalog_group" placeholder="e.g. One Gram Carts" />
+      </div>
+      <div class="toggle">
+        <input type="checkbox" id="website_draft" />
+        <label for="website_draft" style="margin:0; font-weight:600;">Add/update website draft after a successful print</label>
+      </div>
+      <a class="download-btn" href="/catalog-draft" download="catalog-draft.json">Download Website Draft</a>
+    </div>
 
     <label>Health warning (optional)</label>
     <textarea id="warning" placeholder="Paste your required warning here...">__DEFAULT_WARNING__</textarea>
@@ -1108,10 +1294,13 @@ function normalizeJob(job, copyFallback = 1) {
     printer: source.printer || null,
     name: String(source.name || ''),
     price: printablePrice,
+    category: cleanText(source.category),
+    catalog_group: cleanText(source.catalog_group),
     size,
     strain_type: strainType,
     price_preset: pricePreset,
     price_input: priceInput,
+    website_draft: source.website_draft === true,
     warning: String(source.warning || ''),
     include_warning: source.include_warning !== false,
     copies: clampNumber(source.copies ?? copyFallback, LIMITS.copies, copyFallback),
@@ -1167,10 +1356,13 @@ function jobPayload() {
   return normalizeJob({
     printer: document.getElementById('printer').value || null,
     name: document.getElementById('name').value,
+    category: document.getElementById('category').value,
+    catalog_group: document.getElementById('catalog_group').value,
     size: document.getElementById('size').value || document.getElementById('size_custom').value,
     strain_type: document.getElementById('strain_type').value,
     price_preset: document.getElementById('price_preset').value,
     price_input: document.getElementById('price').value,
+    website_draft: document.getElementById('website_draft').checked,
     warning: document.getElementById('warning').value,
     include_warning: document.getElementById('include_warning').checked,
     copies: document.getElementById('copies').value,
@@ -1234,6 +1426,8 @@ function restoreDefaultsToForm() {
 function jobFingerprint(job) {
   return JSON.stringify({
     name: job.name ?? '',
+    category: job.category ?? '',
+    catalog_group: job.catalog_group ?? '',
     price: job.price ?? '',
     size: job.size ?? '',
     strain_type: job.strain_type ?? '',
@@ -1318,6 +1512,8 @@ function jobSearchText(job, entry) {
   const normalized = normalizeJob(job || {});
   return [
     normalized.name,
+    normalized.category,
+    normalized.catalog_group,
     normalized.price,
     normalized.size,
     normalized.strain_type,
@@ -1339,6 +1535,10 @@ function applyJobToForm(job, printer) {
   const normalized = normalizeJob(job);
 
   document.getElementById('name').value = normalized.name;
+  document.getElementById('category').value = normalized.category;
+  document.getElementById('catalog_group').value = normalized.catalog_group;
+  document.getElementById('website_draft').checked = false;
+  syncCatalogGroupFields();
   applySizeToForm(normalized.size);
   document.getElementById('strain_type').value = normalized.strain_type;
   document.getElementById('price_preset').value = normalized.price_preset;
@@ -1462,6 +1662,7 @@ function renderHistory() {
         const payload = {
           ...job,
           printer: entry.printer || document.getElementById('printer').value || null,
+          website_draft: false,
         };
         printJob(payload, count, `Reprinting ${count} copy/copies...`);
       });
@@ -1502,7 +1703,9 @@ async function generateZPL() {
 
 async function printLabel() {
   const job = jobPayload();
-  await printJob(job, job.copies, 'Printing...');
+  if (await printJob(job, job.copies, 'Printing...')) {
+    document.getElementById('website_draft').checked = false;
+  }
 }
 
 document.getElementById('zplBtn').addEventListener('click', generateZPL);
@@ -1558,6 +1761,11 @@ function clampOffset(value) {
   return Math.max(-60, Math.min(60, value));
 }
 
+function syncCatalogGroupFields() {
+  const grouped = ['Vapes & Carts', 'Other'].includes(document.getElementById('category').value);
+  document.getElementById('catalogGroupFields').hidden = !grouped;
+}
+
 function nudgeOffset(delta) {
   const current = parseInt(verticalOffsetInput.value || '0', 10);
   verticalOffsetInput.value = String(clampOffset(current + delta));
@@ -1577,6 +1785,7 @@ document.getElementById('price').addEventListener('input', () => {
   syncPresetFromPrice();
   saveDefaults(jobPayload());
 });
+document.getElementById('category').addEventListener('change', syncCatalogGroupFields);
 for (const id of ['printer', 'strain_type', 'warning', 'include_warning', 'copies', 'darkness', 'vertical_offset']) {
   document.getElementById(id).addEventListener('change', () => saveDefaults(jobPayload()));
 }
