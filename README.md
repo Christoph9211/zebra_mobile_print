@@ -28,6 +28,15 @@ http://100.78.175.1:8787
 
 Remote users can use the web app diagnostics over Tailscale, but the reset shortcut is intentionally local to the office PC.
 
+## Label Pairs
+
+Each price-label job prints two adjacent labels:
+
+1. A full-size product and price label.
+2. A full-size health-warning label.
+
+The **Label pairs** field controls how many sets print, so 3 pairs use 6 physical labels. Generated ZPL follows the same price-then-warning order. The warning is required; marked-down labels keep the reduced price and struck-through original price on the first label.
+
 ## Troubleshooting Notes
 
 - Set `ZPL_PRINTER_HOST` to the Zebra printer IP or hostname to make direct TCP the primary print path. Port `9100` is used by default; override it with `ZPL_PRINTER_PORT`.
