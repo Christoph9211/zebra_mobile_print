@@ -136,7 +136,7 @@ def draw_strikethrough_text(text: str, y: int, font_height: int) -> list[str]:
     ]
 
 
-def fit_warning_text(text: str, width_dots: int, height_dots: int) -> tuple[str, int, int, int, int]:
+def fit_warning_text(text: str, width_dots: int, height_dots: int) -> tuple[list[str], int, int, int, int]:
     clean = " ".join(zpl_escape(text).split())
     if not clean:
         raise ValueError("Health warning is required.")
@@ -154,9 +154,26 @@ def fit_warning_text(text: str, width_dots: int, height_dots: int) -> tuple[str,
         line_spacing = 2
         block_height = (len(lines) * font_height) + (max(0, len(lines) - 1) * line_spacing)
         if block_height <= height_dots:
-            return r"\&".join(lines), font_height, font_width, line_spacing, block_height
+            return lines, font_height, font_width, line_spacing, block_height
 
     raise ValueError("Health warning is too long to fit on the label.")
+
+
+def draw_warning_lines(
+    lines: list[str],
+    y: int,
+    font_height: int,
+    font_width: int,
+    line_spacing: int,
+) -> list[str]:
+    zpl = []
+    for index, line in enumerate(lines):
+        zpl += [
+            f"^FO{LABEL_MARGIN_DOTS},{y + index * (font_height + line_spacing)}",
+            f"^A0N,{font_height},{font_width}",
+            f"^FD{line}^FS",
+        ]
+    return zpl
 
 
 def build_price_label_zpl(
@@ -251,28 +268,21 @@ def build_warning_label_zpl(
     printable_width = LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2)
     sections = build_warning_label_sections()
     warning_section = sections["warningSection"]
-    wrapped, font_height, font_width, line_spacing, block_height = fit_warning_text(
+    lines, font_height, font_width, line_spacing, block_height = fit_warning_text(
         warning,
         printable_width,
         warning_section["height"],
     )
     y_offset = LABEL_Y_OFFSET - vertical_offset
     warning_y = warning_section["top"] + ((warning_section["height"] - block_height) // 2) + y_offset
-    line_count = wrapped.count(r"\&") + 1
-
     z = ["^XA", f"^PW{LABEL_WIDTH_DOTS}", f"^LL{LABEL_HEIGHT_DOTS}", f"^MD{darkness}"]
     z += draw_centered_text(
         "HEALTH WARNING",
         sections["headerSection"]["top"] + y_offset,
         WARNING_HEADING_FONT_DOTS,
     )
-    z += [
-        f"^FO{LABEL_MARGIN_DOTS},{warning_y}",
-        f"^FB{printable_width},{line_count},{line_spacing},L,0",
-        f"^A0N,{font_height},{font_width}",
-        f"^FD{wrapped}^FS",
-        "^XZ",
-    ]
+    z += draw_warning_lines(lines, warning_y, font_height, font_width, line_spacing)
+    z += ["^XZ"]
     return "\n".join(z) + "\n"
 
 
@@ -299,7 +309,7 @@ def build_preroll_label_zpl(
     )
     warning_top = PREROLL_MARKDOWN_WARNING_TOP_DOTS if marked_down else PREROLL_WARNING_TOP_DOTS
     warning_height = LABEL_HEIGHT_DOTS - LABEL_MARGIN_DOTS - warning_top
-    wrapped, warning_font, warning_width, line_spacing, block_height = fit_warning_text(
+    lines, warning_font, warning_width, line_spacing, block_height = fit_warning_text(
         warning,
         printable_width,
         warning_height,
@@ -317,13 +327,8 @@ def build_preroll_label_zpl(
         warning_top - PREROLL_WARNING_HEADING_FONT_DOTS - 5 + y_offset,
         PREROLL_WARNING_HEADING_FONT_DOTS,
     )
-    z += [
-        f"^FO{LABEL_MARGIN_DOTS},{warning_y}",
-        f"^FB{printable_width},{wrapped.count(r'\&') + 1},{line_spacing},L,0",
-        f"^A0N,{warning_font},{warning_width}",
-        f"^FD{wrapped}^FS",
-        "^XZ",
-    ]
+    z += draw_warning_lines(lines, warning_y, warning_font, warning_width, line_spacing)
+    z += ["^XZ"]
     return "\n".join(z) + "\n"
 
 

@@ -38,7 +38,21 @@
 ^A0N,20,20
 ^FDHEALTH WARNING^FS
 ^FO16,62
-^FB374,6,2,L,0
 ^A0N,18,13
-^FDTHCA PRODUCT - HEMP-DERIVED Contains less than\&0.3% DELTA-9 THC. 21+ only. Keep out of reach\&of children. May cause intoxication when\&heated. Do not use while driving or operating\&heavy machinery. Consult a physician before\&use.^FS
+^FDTHCA PRODUCT - HEMP-DERIVED Contains less than^FS
+^FO16,82
+^A0N,18,13
+^FD0.3% DELTA-9 THC. 21+ only. Keep out of reach^FS
+^FO16,102
+^A0N,18,13
+^FDof children. May cause intoxication when^FS
+^FO16,122
+^A0N,18,13
+^FDheated. Do not use while driving or operating^FS
+^FO16,142
+^A0N,18,13
+^FDheavy machinery. Consult a physician before^FS
+^FO16,162
+^A0N,18,13
+^FDuse.^FS
 ^XZ

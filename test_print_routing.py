@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 from unittest.mock import call, patch
@@ -15,6 +16,11 @@ Consult a physician before use."""
 
 def split_labels(zpl: str) -> list[str]:
     return [chunk + "^XZ\n" for chunk in zpl.split("^XZ\n") if chunk]
+
+
+def warning_payload(zpl: str) -> str:
+    fields = re.findall(r"\^FD(.*?)\^FS", zpl)
+    return " ".join(fields[fields.index("HEALTH WARNING") + 1:])
 
 
 class MarkedDownPriceTests(unittest.TestCase):
@@ -123,7 +129,7 @@ class MarkedDownPriceTests(unittest.TestCase):
 
         self.assertIn("^PW609", zpl)
         self.assertIn("^FB577,1,0,C,0", price_label)
-        self.assertRegex(warning_label, r"\^FB577,\d+,2,L,0")
+        self.assertRegex(warning_label, r"\^FO16,\d+\n\^A0N")
         self.assertNotIn("•", zpl)
         self.assertNotIn("Δ", zpl)
 
@@ -155,14 +161,24 @@ class MarkedDownPriceTests(unittest.TestCase):
         warning_label = split_labels(
             main.build_zpl_2x1_centered("", "", SAMPLE_WARNING, True)
         )[1]
-        warning_payload = warning_label.rsplit("^FD", 1)[1].split("^FS", 1)[0]
+        payload = warning_payload(warning_label)
+        line_positions = [
+            int(y)
+            for y in re.findall(
+                r"\^FO16,(\d+)\n\^A0N,\d+,\d+\n\^FD",
+                warning_label,
+            )
+        ]
 
         self.assertEqual(
-            warning_payload.replace(r"\&", " ").split(),
+            payload.split(),
             main.zpl_escape(SAMPLE_WARNING).split(),
         )
-        self.assertNotIn("•", warning_payload)
-        self.assertNotIn("Δ", warning_payload)
+        self.assertGreater(len(line_positions), 1)
+        self.assertEqual(line_positions, sorted(set(line_positions)))
+        self.assertNotIn(r"\&", warning_label)
+        self.assertNotIn("•", payload)
+        self.assertNotIn("Δ", payload)
 
     def test_preroll_combines_readable_name_price_and_full_warning(self):
         zpl = main.build_zpl_2x1_centered(
@@ -173,14 +189,14 @@ class MarkedDownPriceTests(unittest.TestCase):
             price_input="$10.00",
             single_preroll_label=True,
         )
-        warning_payload = zpl.rsplit("^FD", 1)[1].split("^FS", 1)[0]
+        payload = warning_payload(zpl)
 
         self.assertEqual(len(split_labels(zpl)), 1)
         self.assertIn("^A0N,30,30\n^FDPEACH RINGZ^FS", zpl)
         self.assertIn("^A0N,42,42\n^FD$10.00^FS", zpl)
         self.assertIn("^FDHEALTH WARNING^FS", zpl)
         self.assertEqual(
-            warning_payload.replace(r"\&", " ").split(),
+            payload.split(),
             main.zpl_escape(SAMPLE_WARNING).split(),
         )
 
