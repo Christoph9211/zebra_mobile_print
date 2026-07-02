@@ -28,14 +28,16 @@ http://100.78.175.1:8787
 
 Remote users can use the web app diagnostics over Tailscale, but the reset shortcut is intentionally local to the office PC.
 
-## Label Pairs
+## Label Formats
 
 Each price-label job prints two adjacent labels:
 
 1. A full-size product and price label.
 2. A full-size health-warning label.
 
-The **Label pairs** field controls how many sets print, so 3 pairs use 6 physical labels. Generated ZPL follows the same price-then-warning order. The warning is required; marked-down labels keep the reduced price and struck-through original price on the first label.
+The **Copies** field controls how many sets print, so 3 standard copies use 6 physical labels. Generated ZPL follows the same price-then-warning order. The warning is required; marked-down labels keep the reduced price and struck-through original price on the first label.
+
+Enable **Preroll — use one sticker** to fit the product name, price, and complete health warning on a single label. Preroll copies use one physical sticker each and prioritize large name and price text.
 
 ## Troubleshooting Notes
 

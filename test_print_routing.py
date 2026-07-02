@@ -164,6 +164,26 @@ class MarkedDownPriceTests(unittest.TestCase):
         self.assertNotIn("•", warning_payload)
         self.assertNotIn("Δ", warning_payload)
 
+    def test_preroll_combines_readable_name_price_and_full_warning(self):
+        zpl = main.build_zpl_2x1_centered(
+            "Peach Ringz",
+            "$10.00",
+            SAMPLE_WARNING,
+            True,
+            price_input="$10.00",
+            single_preroll_label=True,
+        )
+        warning_payload = zpl.rsplit("^FD", 1)[1].split("^FS", 1)[0]
+
+        self.assertEqual(len(split_labels(zpl)), 1)
+        self.assertIn("^A0N,30,30\n^FDPEACH RINGZ^FS", zpl)
+        self.assertIn("^A0N,42,42\n^FD$10.00^FS", zpl)
+        self.assertIn("^FDHEALTH WARNING^FS", zpl)
+        self.assertEqual(
+            warning_payload.replace(r"\&", " ").split(),
+            main.zpl_escape(SAMPLE_WARNING).split(),
+        )
+
 
 class DeliverZplTests(unittest.TestCase):
     def test_direct_tcp_is_primary(self):
@@ -251,6 +271,25 @@ class DeliverZplTests(unittest.TestCase):
         sent_zpl = deliver.call_args.args[0]
         self.assertEqual(len(split_labels(sent_zpl)), 2)
         deliver.assert_called_once_with(sent_zpl, 3, main.selected_printer_name(None))
+
+    def test_preroll_print_response_reports_one_label_per_copy(self):
+        result = {
+            "success": True,
+            "target": "Zebra Queue",
+            "path": "windows_queue",
+            "fallback_from": None,
+            "fallback_error": "",
+        }
+        with (
+            patch.object(main, "deliver_zpl", return_value=result) as deliver,
+            patch.object(main, "record_print_attempt"),
+        ):
+            response = main.print_label(
+                main.PrintJob(copies=3, single_preroll_label=True)
+            )
+
+        self.assertIn("3 preroll label(s)", response)
+        self.assertEqual(len(split_labels(deliver.call_args.args[0])), 1)
 
 
 if __name__ == "__main__":

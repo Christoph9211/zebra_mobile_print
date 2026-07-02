@@ -55,6 +55,9 @@ OLD_PRICE_FONT_DOTS = 14
 WARNING_HEADING_FONT_DOTS = 20
 WARNING_FONT_MAX_DOTS = 18
 WARNING_FONT_MIN_DOTS = 10
+PREROLL_WARNING_HEADING_FONT_DOTS = 14
+PREROLL_WARNING_TOP_DOTS = 123
+PREROLL_MARKDOWN_WARNING_TOP_DOTS = 126
 WARNING_MAX_CHARACTERS = 600
 PRINT_LOG_LIMIT = 50
 PRINT_ATTEMPT_LOG: deque[dict[str, Any]] = deque(maxlen=PRINT_LOG_LIMIT)
@@ -273,6 +276,57 @@ def build_warning_label_zpl(
     return "\n".join(z) + "\n"
 
 
+def build_preroll_label_zpl(
+    name: str,
+    price: str,
+    warning: str,
+    darkness: int = 20,
+    vertical_offset: int = 0,
+    marked_down: bool = False,
+    original_price: str = "",
+    price_input: str = "",
+) -> str:
+    """Render product, price, and health warning on one preroll label."""
+    name = zpl_escape(name).upper()
+    display_price = zpl_escape(price_input) or zpl_escape(price)
+    printable_width = LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2)
+    title_font = fitted_font_size(name, TITLE_FONT_MAX_DOTS, TITLE_FONT_MIN_DOTS, printable_width)
+    price_font = fitted_font_size(
+        display_price,
+        34 if marked_down else PRICE_FONT_MAX_DOTS,
+        PRICE_FONT_MIN_DOTS,
+        printable_width,
+    )
+    warning_top = PREROLL_MARKDOWN_WARNING_TOP_DOTS if marked_down else PREROLL_WARNING_TOP_DOTS
+    warning_height = LABEL_HEIGHT_DOTS - LABEL_MARGIN_DOTS - warning_top
+    wrapped, warning_font, warning_width, line_spacing, block_height = fit_warning_text(
+        warning,
+        printable_width,
+        warning_height,
+    )
+    y_offset = LABEL_Y_OFFSET - vertical_offset
+    warning_y = warning_top + ((warning_height - block_height) // 2) + y_offset
+
+    z = ["^XA", f"^PW{LABEL_WIDTH_DOTS}", f"^LL{LABEL_HEIGHT_DOTS}", f"^MD{darkness}"]
+    z += draw_centered_text(name, LABEL_MARGIN_DOTS + y_offset, title_font)
+    z += draw_centered_text(display_price, 52 + y_offset, price_font)
+    if marked_down:
+        z += draw_strikethrough_text(f"WAS {original_price}", 90 + y_offset, 12)
+    z += draw_centered_text(
+        "HEALTH WARNING",
+        warning_top - PREROLL_WARNING_HEADING_FONT_DOTS - 5 + y_offset,
+        PREROLL_WARNING_HEADING_FONT_DOTS,
+    )
+    z += [
+        f"^FO{LABEL_MARGIN_DOTS},{warning_y}",
+        f"^FB{printable_width},{wrapped.count(r'\&') + 1},{line_spacing},L,0",
+        f"^A0N,{warning_font},{warning_width}",
+        f"^FD{wrapped}^FS",
+        "^XZ",
+    ]
+    return "\n".join(z) + "\n"
+
+
 def build_zpl_2x1_centered(
     name: str,
     price: str,
@@ -286,10 +340,22 @@ def build_zpl_2x1_centered(
     size: str = "",
     strain_type: str = "",
     price_input: str = "",
+    single_preroll_label: bool = False,
 ) -> str:
-    """Render one interleaved price + warning label pair."""
+    """Render a price/warning pair or one combined preroll label."""
     # ponytail: keep the legacy flag in the signature for API compatibility; pairs are now mandatory.
     del include_warning
+    if single_preroll_label:
+        return build_preroll_label_zpl(
+            name=name,
+            price=price,
+            warning=warning,
+            darkness=darkness,
+            vertical_offset=vertical_offset,
+            marked_down=marked_down,
+            original_price=original_price,
+            price_input=price_input,
+        )
     return build_price_label_zpl(
         name=name,
         price=price,
@@ -632,7 +698,7 @@ class PrintJob(BaseModel):
     warning: str = Field(
         default=DEFAULT_WARNING,
         max_length=WARNING_MAX_CHARACTERS,
-        description="Required health warning printed on the paired label",
+        description="Required health warning printed on the label",
     )
     include_warning: bool = Field(default=True, description="Deprecated; warning labels are always printed")
     copies: int = Field(default=1, ge=1, le=200)
@@ -644,12 +710,22 @@ class PrintJob(BaseModel):
     size: str = Field(default="")
     strain_type: str = Field(default="")
     price_input: str = Field(default="")
+    single_preroll_label: bool = Field(
+        default=False,
+        description="Print product, price, and health warning on one preroll label",
+    )
 
     @model_validator(mode="after")
-    def validate_label_pair(self):
+    def validate_label(self):
         if self.marked_down and not self.original_price.strip():
             raise ValueError("Original price is required for a marked-down label.")
         warning_section = build_warning_label_sections()["warningSection"]
+        if self.single_preroll_label:
+            warning_top = PREROLL_MARKDOWN_WARNING_TOP_DOTS if self.marked_down else PREROLL_WARNING_TOP_DOTS
+            warning_section = {
+                "top": warning_top,
+                "height": LABEL_HEIGHT_DOTS - LABEL_MARGIN_DOTS - warning_top,
+            }
         fit_warning_text(
             self.warning,
             LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2),
@@ -771,6 +847,7 @@ def make_zpl(job: PrintJob):
         size=job.size,
         strain_type=job.strain_type,
         price_input=job.price_input,
+        single_preroll_label=job.single_preroll_label,
     )
     return zpl
 
@@ -790,6 +867,7 @@ def print_label(job: PrintJob):
         size=job.size,
         strain_type=job.strain_type,
         price_input=job.price_input,
+        single_preroll_label=job.single_preroll_label,
     )
     result = deliver_zpl(zpl, job.copies, selected_printer_name(job.printer))
     record_print_attempt({**result, "source": "label"})
@@ -803,10 +881,12 @@ def print_label(job: PrintJob):
         else ""
     )
     route = "direct TCP" if result["path"] == "direct_tcp" else "Windows queue"
-    return (
-        f"Printed {job.copies} label pair(s) ({job.copies * 2} physical labels) "
-        f"via {route} to {result['target']}{fallback}."
+    quantity = (
+        f"{job.copies} preroll label(s)"
+        if job.single_preroll_label
+        else f"{job.copies} label pair(s) ({job.copies * 2} physical labels)"
     )
+    return f"Printed {quantity} via {route} to {result['target']}{fallback}."
 
 
 @app.post("/diagnostics/test-print", response_class=PlainTextResponse)
@@ -999,18 +1079,24 @@ MOBILE_HTML = r"""
     <div id="markedDownFields" hidden>
       <label for="original_price">Original price</label>
       <input id="original_price" placeholder="e.g. $30.00" />
-      <div class="small">The label will show “PRICE REDUCED” with the original price struck out below.</div>
+      <div class="small">Standard labels show “PRICE REDUCED”; preroll labels keep the struck-out original price.</div>
     </div>
+
+    <div class="toggle">
+      <input type="checkbox" id="single_preroll_label" />
+      <label for="single_preroll_label" style="margin:0; font-weight:600;">Preroll — use one sticker</label>
+    </div>
+    <div class="small">Combines the product name, price, and health warning on one label. Subtitle, size, and type are omitted to keep the name and price large.</div>
 
     <label for="warning">Health warning</label>
     <textarea id="warning" maxlength="600" required placeholder="Paste your required warning here...">__DEFAULT_WARNING__</textarea>
-    <div class="small">Each price label is followed by a full-size health-warning label.</div>
+    <div class="small">Prerolls use one combined sticker; other products print a separate warning sticker.</div>
 
     <div class="row">
       <div>
-        <label for="copies">Label pairs</label>
+        <label for="copies">Copies</label>
         <input id="copies" type="number" min="1" max="200" value="1" />
-        <div class="small">1 pair uses 2 physical labels.</div>
+        <div class="small">Each preroll copy uses 1 sticker; other copies use 2.</div>
       </div>
       <div>
         <label>Darkness</label>
@@ -1332,6 +1418,7 @@ function normalizeJob(job, copyFallback = 1) {
   const priceInput = cleanText(source.price_input ?? source.price_amount ?? pricePreset);
   const legacyPrice = String(source.price || '');
   const markedDown = source.marked_down === true;
+  const singlePrerollLabel = source.single_preroll_label === true;
   const printablePrice = structured
     ? composeBottomLine(size, strainType, priceInput || pricePreset || legacyPrice)
     : legacyPrice;
@@ -1345,6 +1432,7 @@ function normalizeJob(job, copyFallback = 1) {
     price_preset: pricePreset,
     price_input: priceInput,
     marked_down: markedDown,
+    single_preroll_label: singlePrerollLabel,
     original_price: cleanText(source.original_price),
     warning: String(source.warning || ''),
     include_warning: true,
@@ -1407,6 +1495,7 @@ function jobPayload() {
     price_preset: document.getElementById('price_preset').value,
     price_input: document.getElementById('price').value,
     marked_down: document.getElementById('marked_down').checked,
+    single_preroll_label: document.getElementById('single_preroll_label').checked,
     original_price: document.getElementById('original_price').value,
     warning: document.getElementById('warning').value,
     copies: document.getElementById('copies').value,
@@ -1431,6 +1520,7 @@ function saveDefaults(job) {
     size: defaults.size,
     price_preset: defaults.price_preset,
     price_input: defaults.price_input,
+    single_preroll_label: defaults.single_preroll_label,
     warning: defaults.warning,
     darkness: defaults.darkness,
     vertical_offset: defaults.vertical_offset,
@@ -1454,6 +1544,7 @@ function restoreDefaultsToForm() {
       size: defaults.size ?? current.size,
       price_preset: defaults.price_preset ?? current.price_preset,
       price_input: defaults.price_input ?? current.price_input,
+      single_preroll_label: defaults.single_preroll_label ?? current.single_preroll_label,
       warning: defaults.warning ?? current.warning,
       copies: defaults.copies ?? current.copies,
       darkness: defaults.darkness ?? current.darkness,
@@ -1475,6 +1566,7 @@ function jobFingerprint(job) {
     price_preset: job.price_preset ?? '',
     price_input: job.price_input ?? '',
     marked_down: job.marked_down === true,
+    single_preroll_label: job.single_preroll_label === true,
     original_price: job.original_price ?? '',
     warning: job.warning ?? '',
     darkness: Number(job.darkness ?? 0),
@@ -1561,6 +1653,7 @@ function jobSearchText(job, entry) {
     normalized.price_input,
     normalized.original_price,
     normalized.marked_down ? 'marked down' : '',
+    normalized.single_preroll_label ? 'preroll single sticker' : '',
     normalized.warning,
     entry && entry.printer,
     entry && formatTimestamp(entry.ts),
@@ -1584,6 +1677,7 @@ function applyJobToForm(job, printer) {
   document.getElementById('price_preset').value = normalized.price_preset;
   document.getElementById('price').value = normalized.price_input || normalized.price;
   document.getElementById('marked_down').checked = normalized.marked_down;
+  document.getElementById('single_preroll_label').checked = normalized.single_preroll_label;
   document.getElementById('original_price').value = normalized.original_price;
   updateMarkedDownUI();
   document.getElementById('warning').value = normalized.warning;
@@ -1627,7 +1721,7 @@ async function printJob(job, copies, message) {
   if (!validateJob(job)) {
     return false;
   }
-  setStatus(message || `Printing ${copies} label pair(s) (${copies * 2} labels)...`);
+  setStatus(message || `Printing ${jobCountText(job, copies)}...`);
   const payload = {
     ...normalizeJob(job, copies),
     printer: job.printer || document.getElementById('printer').value || null,
@@ -1676,7 +1770,8 @@ function renderHistory() {
     const meta = document.createElement('div');
     meta.className = 'history-meta';
     const markdownMeta = job.marked_down ? `Marked down from ${job.original_price} | ` : '';
-    meta.textContent = `${markdownMeta}Price: ${job.price_input || job.price || 'No price'} | Warn: ${abbreviatedWarning(job.warning)} | ${formatTimestamp(entry.ts)} | ${entry.result || `Windows printer: ${entry.printer || 'Unknown'}`}`;
+    const formatMeta = job.single_preroll_label ? 'Preroll: 1 sticker | ' : '';
+    meta.textContent = `${formatMeta}${markdownMeta}Price: ${job.price_input || job.price || 'No price'} | Warn: ${abbreviatedWarning(job.warning)} | ${formatTimestamp(entry.ts)} | ${entry.result || `Windows printer: ${entry.printer || 'Unknown'}`}`;
 
     const actions = document.createElement('div');
     actions.className = 'history-actions';
@@ -1710,7 +1805,7 @@ function renderHistory() {
           ...job,
           printer: entry.printer || document.getElementById('printer').value || null,
         };
-        printJob(payload, count, `Reprinting ${count} label pair(s) (${count * 2} labels)...`);
+        printJob(payload, count, `Reprinting ${jobCountText(payload, count)}...`);
       });
       actions.appendChild(reprintBtn);
     }
@@ -1751,12 +1846,18 @@ async function generateZPL() {
   URL.revokeObjectURL(url);
 
   saveDefaults(job);
-  setStatus('Paired price + warning ZPL downloaded.');
+  setStatus(job.single_preroll_label ? 'Combined preroll ZPL downloaded.' : 'Paired price + warning ZPL downloaded.');
+}
+
+function jobCountText(job, copies) {
+  return job.single_preroll_label
+    ? `${copies} preroll label(s)`
+    : `${copies} label pair(s) (${copies * 2} labels)`;
 }
 
 async function printLabel() {
   const job = jobPayload();
-  await printJob(job, job.copies, `Printing ${job.copies} label pair(s) (${job.copies * 2} labels)...`);
+  await printJob(job, job.copies, `Printing ${jobCountText(job, job.copies)}...`);
 }
 
 document.getElementById('zplBtn').addEventListener('click', generateZPL);
@@ -1805,7 +1906,7 @@ function validateJob(job) {
     return false;
   }
   if (!normalized.warning.trim()) {
-    setStatus('Enter the health warning for the paired warning label.');
+    setStatus('Enter the health warning for the label.');
     document.getElementById('warning').focus();
     return false;
   }
@@ -1860,6 +1961,7 @@ document.getElementById('price').addEventListener('input', () => {
 document.getElementById('marked_down').addEventListener('change', (event) => {
   updateMarkedDownUI(event.target.checked);
 });
+document.getElementById('single_preroll_label').addEventListener('change', () => saveDefaults(jobPayload()));
 for (const id of ['printer', 'strain_type', 'warning', 'copies', 'darkness', 'vertical_offset']) {
   document.getElementById(id).addEventListener('change', () => saveDefaults(jobPayload()));
 }
