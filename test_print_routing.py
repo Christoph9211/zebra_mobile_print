@@ -394,6 +394,79 @@ class CatalogDraftTests(unittest.TestCase):
                 price_input="$20", website_draft=True,
             )
 
+    def test_grouped_category_rejects_unknown_parent(self):
+        with self.assertRaisesRegex(ValueError, "valid parent product"):
+            main.PrintJob(
+                name="Super Lemon", category="Vapes & Carts", size="1 gram",
+                price_input="$20", catalog_group="New Group", website_draft=True,
+            )
+
+    def test_grouped_categories_accept_every_available_parent(self):
+        for category, groups in main.CATALOG_GROUPS.items():
+            for group in groups:
+                with self.subTest(category=category, group=group):
+                    job = main.PrintJob(
+                        name="Variant", category=category, size="1 gram",
+                        price_input="$20", catalog_group=group, website_draft=True,
+                    )
+                    self.assertEqual(job.catalog_group, group)
+
+    def test_parent_group_is_a_category_dependent_dropdown(self):
+        self.assertIn('<select id="catalog_group" disabled>', main.MOBILE_HTML)
+        self.assertIn("select.disabled = groups.length === 0;", main.MOBILE_HTML)
+        self.assertIn("select.value = groups.includes(selected) ? selected : '';", main.MOBILE_HTML)
+
+    def test_backfill_imports_once_without_printing(self):
+        with TemporaryDirectory() as directory:
+            draft = Path(directory) / "catalog.jsonl"
+            request = main.CatalogBackfillRequest(candidates=[{
+                "source_id": "http://127.0.0.1:8787:history-1",
+                "name": "Blue Dream",
+                "category": "Flower",
+                "size": "3 gram",
+                "price_input": "$25",
+                "printed_at": "2026-01-01T00:00:00Z",
+            }])
+            with patch.object(main, "CATALOG_DRAFT_PATH", draft):
+                first = main.catalog_draft_backfill(request)
+                second = main.catalog_draft_backfill(request)
+
+            self.assertEqual(first, {"imported": 1, "skipped": 0})
+            self.assertEqual(second, {"imported": 0, "skipped": 1})
+            row = json.loads(draft.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(row["size"], "3 grams")
+            self.assertEqual(row["source_id"], "http://127.0.0.1:8787:history-1")
+
+    def test_backfill_rejects_invalid_candidate(self):
+        with self.assertRaisesRegex(ValueError, "category is invalid"):
+            main.CatalogBackfillCandidate(
+                source_id="history-1", name="Blue Dream", category="Unknown",
+                size="1 gram", price_input="$10",
+            )
+        with self.assertRaisesRegex(ValueError, "simple number"):
+            main.CatalogBackfillCandidate(
+                source_id="history-2", name="Blue Dream", category="Flower",
+                size="1 gram", price_input="2 for $15",
+            )
+        with self.assertRaisesRegex(ValueError, "size is required"):
+            main.CatalogBackfillCandidate(
+                source_id="history-3", name="Blue Dream", category="Flower",
+                size="", price_input="$10",
+            )
+
+    def test_grouped_backfill_does_not_require_unused_size(self):
+        candidate = main.CatalogBackfillCandidate(
+            source_id="history-1", name="Super Lemon", category="Vapes & Carts",
+            catalog_group="One Gram Carts", size="", price_input="$20",
+        )
+        self.assertEqual(candidate.draft_row()["size"], "")
+
+    def test_backfill_ui_reads_history_and_requires_confirmation(self):
+        self.assertIn("Review Label Backlog", main.MOBILE_HTML)
+        self.assertIn("readHistory().filter", main.MOBILE_HTML)
+        self.assertIn("catalogMatches(job, products)", main.MOBILE_HTML)
+        self.assertIn("'/catalog-draft/backfill'", main.MOBILE_HTML)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -68,6 +68,13 @@ PRINT_LOG_LIMIT = 50
 PRINT_ATTEMPT_LOG: deque[dict[str, Any]] = deque(maxlen=PRINT_LOG_LIMIT)
 CATALOG_DRAFT_PATH = Path(os.environ.get("ZPL_CATALOG_DRAFT_PATH", "data/catalog-draft.jsonl"))
 GROUPED_CATEGORIES = {"vapes & carts", "other"}
+CATALOG_GROUPS = {
+    "Vapes & Carts": ("One Gram Carts", "One Gram Disposable", "Two Gram Vapes"),
+    "Other": ("Flower Preroll", "Infused Prerolls"),
+}
+CATALOG_CATEGORIES = (
+    "Concentrates", "Diamonds & Sauce", "Edibles", "Flower", "Other", "Vapes & Carts",
+)
 
 
 # -----------------------
@@ -96,7 +103,7 @@ def catalog_price(value: str) -> int | float:
     return int(price) if price == price.to_integral() else float(price)
 
 
-def append_catalog_draft(job: "PrintJob") -> None:
+def append_catalog_rows(rows: list[dict[str, Any]]) -> tuple[int, int]:
     path = CATALOG_DRAFT_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.with_suffix(path.suffix + ".lock").open("a+b") as lock:
@@ -106,18 +113,34 @@ def append_catalog_draft(job: "PrintJob") -> None:
         lock.seek(0)
         msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
         try:
+            existing_ids = set()
+            if path.exists():
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    try:
+                        source_id = json.loads(line).get("source_id")
+                        if source_id:
+                            existing_ids.add(source_id)
+                    except (json.JSONDecodeError, AttributeError):
+                        continue
+            accepted = [row for row in rows if not row.get("source_id") or row["source_id"] not in existing_ids]
             with path.open("a", encoding="utf-8") as draft:
-                draft.write(json.dumps({
-                    "name": job.name.strip(),
-                    "category": job.category.strip(),
-                    "catalog_group": job.catalog_group.strip(),
-                    "size": canonical_catalog_size(job.size),
-                    "price": catalog_price(job.price_input),
-                    "printed_at": datetime.now(timezone.utc).isoformat(),
-                }, ensure_ascii=False) + "\n")
+                for row in accepted:
+                    draft.write(json.dumps(row, ensure_ascii=False) + "\n")
+            return len(accepted), len(rows) - len(accepted)
         finally:
             lock.seek(0)
             msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def append_catalog_draft(job: "PrintJob") -> None:
+    append_catalog_rows([{
+        "name": job.name.strip(),
+        "category": job.category.strip(),
+        "catalog_group": job.catalog_group.strip(),
+        "size": canonical_catalog_size(job.size),
+        "price": catalog_price(job.price_input),
+        "printed_at": datetime.now(timezone.utc).isoformat(),
+    }])
 
 
 def catalog_draft_products(path: Path | None = None) -> list[dict[str, Any]]:
@@ -808,8 +831,18 @@ class PrintJob(BaseModel):
             if not self.name.strip() or not self.category.strip() or not self.size.strip():
                 raise ValueError("Website drafts require name, category, and size.")
             catalog_price(self.price_input)
-            if self.category.strip().casefold() in GROUPED_CATEGORIES and not self.catalog_group.strip():
-                raise ValueError("Website drafts in Vapes & Carts or Other require a parent product/group.")
+            allowed_groups = next(
+                (
+                    groups
+                    for category, groups in CATALOG_GROUPS.items()
+                    if category.casefold() == self.category.strip().casefold()
+                ),
+                (),
+            )
+            if allowed_groups and self.catalog_group.strip() not in allowed_groups:
+                raise ValueError(
+                    f"Website drafts in {self.category.strip()} require a valid parent product/group."
+                )
         if self.marked_down and not self.original_price.strip():
             raise ValueError("Original price is required for a marked-down label.")
         warning_section = build_warning_label_sections()["warningSection"]
@@ -829,6 +862,48 @@ class PrintJob(BaseModel):
 
 class TestPrintJob(BaseModel):
     printer: Optional[str] = Field(default=None, description="Windows printer name (optional)")
+
+
+class CatalogBackfillCandidate(BaseModel):
+    source_id: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
+    category: str
+    catalog_group: str = ""
+    size: str = Field(default="", max_length=100)
+    price_input: str
+    printed_at: str = ""
+
+    @model_validator(mode="after")
+    def validate_candidate(self):
+        self.name = self.name.strip()
+        self.category = self.category.strip()
+        self.catalog_group = self.catalog_group.strip()
+        self.size = self.size.strip()
+        self.price_input = self.price_input.strip()
+        if self.category not in CATALOG_CATEGORIES:
+            raise ValueError("Website draft category is invalid.")
+        if self.category not in CATALOG_GROUPS and not self.size:
+            raise ValueError("Website draft size is required for this category.")
+        allowed_groups = CATALOG_GROUPS.get(self.category, ())
+        if allowed_groups and self.catalog_group not in allowed_groups:
+            raise ValueError(f"Website drafts in {self.category} require a valid parent product/group.")
+        catalog_price(self.price_input)
+        return self
+
+    def draft_row(self) -> dict[str, Any]:
+        return {
+            "source_id": self.source_id,
+            "name": self.name,
+            "category": self.category,
+            "catalog_group": self.catalog_group,
+            "size": canonical_catalog_size(self.size),
+            "price": catalog_price(self.price_input),
+            "printed_at": self.printed_at or datetime.now(timezone.utc).isoformat(),
+        }
+
+
+class CatalogBackfillRequest(BaseModel):
+    candidates: list[CatalogBackfillCandidate] = Field(max_length=100)
 
 
 @app.get("/health")
@@ -931,6 +1006,12 @@ def catalog_draft():
         catalog_draft_products(),
         headers={"Content-Disposition": 'attachment; filename="catalog-draft.json"'},
     )
+
+
+@app.post("/catalog-draft/backfill")
+def catalog_draft_backfill(request: CatalogBackfillRequest):
+    imported, skipped = append_catalog_rows([candidate.draft_row() for candidate in request.candidates])
+    return {"imported": imported, "skipped": skipped}
 
 
 @app.post("/zpl", response_class=PlainTextResponse)
@@ -1215,7 +1296,9 @@ MOBILE_HTML = r"""
       </div>
       <div>
         <label for="catalog_group">Parent product/group</label>
-        <input id="catalog_group" placeholder="Required for Vapes & Carts or Other" />
+        <select id="catalog_group" disabled>
+          <option value="">Not used for this category</option>
+        </select>
       </div>
     </div>
 
@@ -1258,6 +1341,17 @@ MOBILE_HTML = r"""
     </div>
     <div id="historyList"></div>
 
+    <div class="panel">
+      <h3 class="history-title">Retroactive Website Draft</h3>
+      <div class="small">Choose the current website products.json to classify this browser's retained label history.</div>
+      <input id="backfillCatalogFile" type="file" accept="application/json,.json" />
+      <div class="btnrow">
+        <button id="reviewBacklogBtn" type="button">Review Label Backlog</button>
+        <button id="importBacklogBtn" type="button" disabled>Import Selected Drafts</button>
+      </div>
+      <div id="backfillReview"></div>
+    </div>
+
     <pre id="status"></pre>
   </div>
 
@@ -1299,6 +1393,11 @@ const SIZE_SHORT_LABELS = {
   '1/4 oz': '1/4 oz',
 };
 const STRAIN_TYPES = ['Indica', 'Sativa', 'Hybrid', 'Indica Leaning Hybrid', 'Sativa Leaning Hybrid'];
+const CATALOG_GROUPS = {
+  'Vapes & Carts': ['One Gram Carts', 'One Gram Disposable', 'Two Gram Vapes'],
+  Other: ['Flower Preroll', 'Infused Prerolls'],
+};
+const CATALOG_CATEGORIES = ['Concentrates', 'Diamonds & Sauce', 'Edibles', 'Flower', 'Other', 'Vapes & Carts'];
 
 function setStatus(message) {
   document.getElementById('status').textContent = message;
@@ -1642,6 +1741,25 @@ function jobPayload() {
   });
 }
 
+function updateCatalogGroups(selected = '') {
+  const category = document.getElementById('category').value;
+  const select = document.getElementById('catalog_group');
+  const groups = CATALOG_GROUPS[category] || [];
+  select.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = groups.length ? 'Choose parent product/group' : 'Not used for this category';
+  select.appendChild(placeholder);
+  for (const group of groups) {
+    const option = document.createElement('option');
+    option.value = group;
+    option.textContent = group;
+    select.appendChild(option);
+  }
+  select.disabled = groups.length === 0;
+  select.value = groups.includes(selected) ? selected : '';
+}
+
 function readHistory() {
   return readJsonArray(HISTORY_KEY, HISTORY_SCHEMA_VERSION, 'Saved label history was corrupted and has been reset.');
 }
@@ -1817,6 +1935,8 @@ function applyJobToForm(job, printer) {
   document.getElementById('marked_down').checked = normalized.marked_down;
   document.getElementById('single_preroll_label').checked = normalized.single_preroll_label;
   document.getElementById('original_price').value = normalized.original_price;
+  document.getElementById('category').value = normalized.category;
+  updateCatalogGroups(normalized.catalog_group);
   updateMarkedDownUI();
   document.getElementById('warning').value = normalized.warning;
   document.getElementById('copies').value = String(normalized.copies);
@@ -1878,6 +1998,161 @@ async function printJob(job, copies, message) {
     document.getElementById('website_draft').checked = false;
   }
   return res.ok;
+}
+
+function catalogMatches(job, products) {
+  if (job.category) {
+    return [{ category: job.category, group: job.catalog_group || '' }];
+  }
+  const name = job.name.trim().toLowerCase();
+  const matches = [];
+  for (const product of products) {
+    const category = String(product.category || '').trim();
+    const productName = String(product.name || '').trim();
+    if (!CATALOG_CATEGORIES.includes(category)) continue;
+    if (!CATALOG_GROUPS[category] && productName.toLowerCase() === name) {
+      matches.push({ category, group: '' });
+    }
+    if (CATALOG_GROUPS[category] && (product.size_options || []).some(
+      (option) => String(option).trim().toLowerCase() === name
+    )) {
+      matches.push({ category, group: productName });
+    }
+  }
+  return matches.filter((match, index, all) =>
+    all.findIndex((other) => other.category === match.category && other.group === match.group) === index
+  );
+}
+
+function selectField(values, selected, placeholder) {
+  const select = document.createElement('select');
+  const empty = document.createElement('option');
+  empty.value = '';
+  empty.textContent = placeholder;
+  select.appendChild(empty);
+  for (const value of values) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = value;
+    select.appendChild(option);
+  }
+  select.value = values.includes(selected) ? selected : '';
+  return select;
+}
+
+function updateBackfillGroup(row, selected = '') {
+  const group = row.querySelector('[data-field="catalog_group"]');
+  const category = row.querySelector('[data-field="category"]').value;
+  const values = CATALOG_GROUPS[category] || [];
+  const replacement = selectField(values, selected, values.length ? 'Choose parent group' : 'Not used');
+  replacement.dataset.field = 'catalog_group';
+  replacement.disabled = values.length === 0;
+  group.replaceWith(replacement);
+}
+
+function renderBackfillReview(products) {
+  const container = document.getElementById('backfillReview');
+  container.innerHTML = '';
+  const history = readHistory().filter(
+    (entry) => !String(entry.result || '').includes('Website draft saved.')
+  );
+  for (const entry of history) {
+    const job = normalizeJob(entry.job || {});
+    const matches = catalogMatches(job, products);
+    const inferred = matches.length === 1 ? matches[0] : { category: '', group: '' };
+    const validPrice = /^\s*\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?\s*$/.test(job.price_input);
+    const sizeRequired = !CATALOG_GROUPS[inferred.category];
+    const row = document.createElement('div');
+    row.className = 'history-item';
+    row.dataset.sourceId = `${location.origin}:${entry.id}`;
+    row.dataset.printedAt = entry.ts || '';
+
+    const include = document.createElement('input');
+    include.type = 'checkbox';
+    include.dataset.field = 'include';
+    include.checked = matches.length === 1 && !!job.name && (!sizeRequired || !!job.size) && validPrice;
+    row.appendChild(include);
+
+    const title = document.createElement('div');
+    title.className = 'history-main';
+    title.textContent = `${job.name || '(Unnamed item)'} — ${formatTimestamp(entry.ts)}`;
+    row.appendChild(title);
+
+    for (const [field, value] of [['name', job.name], ['size', job.size], ['price_input', job.price_input]]) {
+      const input = document.createElement('input');
+      input.dataset.field = field;
+      input.value = value;
+      input.placeholder = field.replace('_', ' ');
+      row.appendChild(input);
+    }
+
+    const category = selectField(CATALOG_CATEGORIES, inferred.category, matches.length > 1 ? 'Ambiguous: choose category' : 'Choose category');
+    category.dataset.field = 'category';
+    category.addEventListener('change', () => updateBackfillGroup(row));
+    row.appendChild(category);
+
+    const group = selectField([], '', 'Not used');
+    group.dataset.field = 'catalog_group';
+    row.appendChild(group);
+    updateBackfillGroup(row, inferred.group);
+    container.appendChild(row);
+  }
+  document.getElementById('importBacklogBtn').disabled = history.length === 0;
+  setStatus(history.length ? `Reviewing ${history.length} retained label(s). Exact catalog matches are selected.` : 'No uncaptured label history found in this browser.');
+}
+
+async function reviewBacklog() {
+  const file = document.getElementById('backfillCatalogFile').files[0];
+  if (!file) {
+    setStatus('Choose the current products.json first.');
+    return;
+  }
+  try {
+    const products = JSON.parse(await file.text());
+    if (!Array.isArray(products)) throw new Error('Catalog must be a JSON array.');
+    renderBackfillReview(products);
+  } catch (error) {
+    setStatus(`Could not read products.json: ${error.message}`);
+  }
+}
+
+async function importBacklog() {
+  const selectedRows = Array.from(document.querySelectorAll('#backfillReview .history-item'))
+    .filter((row) => row.querySelector('[data-field="include"]').checked);
+  const missingSizes = selectedRows.filter((row) =>
+    !CATALOG_GROUPS[row.querySelector('[data-field="category"]').value]
+    && !row.querySelector('[data-field="size"]').value.trim()
+  );
+  if (missingSizes.length) {
+    const names = missingSizes.map((row) => row.querySelector('[data-field="name"]').value || '(unnamed)').join(', ');
+    setStatus(`Add a size or deselect these labels: ${names}`);
+    return;
+  }
+  const candidates = selectedRows
+    .map((row) => ({
+      source_id: row.dataset.sourceId,
+      printed_at: row.dataset.printedAt,
+      name: row.querySelector('[data-field="name"]').value,
+      size: row.querySelector('[data-field="size"]').value,
+      price_input: row.querySelector('[data-field="price_input"]').value,
+      category: row.querySelector('[data-field="category"]').value,
+      catalog_group: row.querySelector('[data-field="catalog_group"]').value,
+    }));
+  if (!candidates.length) {
+    setStatus('Select at least one reviewed label.');
+    return;
+  }
+  const res = await fetch('/catalog-draft/backfill', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ candidates }),
+  });
+  const body = await res.json();
+  if (!res.ok) {
+    setStatus(`Backlog import rejected: ${JSON.stringify(body.detail || body)}`);
+    return;
+  }
+  setStatus(`Imported ${body.imported} website draft(s); skipped ${body.skipped} already imported.`);
 }
 
 function renderHistory() {
@@ -2001,6 +2276,8 @@ async function printLabel() {
 
 document.getElementById('zplBtn').addEventListener('click', generateZPL);
 document.getElementById('printBtn').addEventListener('click', printLabel);
+document.getElementById('reviewBacklogBtn').addEventListener('click', reviewBacklog);
+document.getElementById('importBacklogBtn').addEventListener('click', importBacklog);
 document.getElementById('troubleshootingToggle').addEventListener('click', toggleTroubleshooting);
 document.getElementById('runDiagnosticsBtn').addEventListener('click', runDiagnostics);
 document.getElementById('testLabelBtn').addEventListener('click', sendTestLabel);
@@ -2116,11 +2393,16 @@ document.getElementById('marked_down').addEventListener('change', (event) => {
   updateMarkedDownUI(event.target.checked);
 });
 document.getElementById('single_preroll_label').addEventListener('change', () => saveDefaults(jobPayload()));
+document.getElementById('category').addEventListener('change', () => {
+  updateCatalogGroups();
+  saveDefaults(jobPayload());
+});
 for (const id of ['printer', 'strain_type', 'warning', 'copies', 'darkness', 'vertical_offset']) {
   document.getElementById(id).addEventListener('change', () => saveDefaults(jobPayload()));
 }
 
 updateMarkedDownUI();
+updateCatalogGroups();
 loadRouteHint();
 loadPrinters();
 renderHistory();

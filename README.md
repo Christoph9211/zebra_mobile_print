@@ -39,6 +39,10 @@ The **Copies** field controls how many sets print, so 3 standard copies use 6 ph
 
 Enable **Preroll — use one sticker** to fit the product name, price, and complete health warning on a single label. Preroll copies use one physical sticker each and prioritize large name and price text.
 
+## Recover Previous Labels
+
+Use **Review Label Backlog** on the office PC and choose the website's current `products.json`. Exact catalog matches are selected automatically; review unmatched or ambiguous labels, then import the selected drafts. Run this once from each server URL previously used because browser history is stored separately per origin.
+
 ## Troubleshooting Notes
 
 - Website drafts are appended to `data/catalog-draft.jsonl`; set `ZPL_CATALOG_DRAFT_PATH` to override that location.
