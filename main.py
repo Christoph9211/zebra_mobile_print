@@ -396,16 +396,18 @@ def build_preroll_label_zpl(
     vertical_offset: int = 0,
     marked_down: bool = False,
     original_price: str = "",
+    strain_type: str = "",
     price_input: str = "",
 ) -> str:
     """Render product, price, and health warning on one preroll label."""
     name = zpl_escape(name).upper()
+    strain_type = zpl_escape(strain_type).upper()
     display_price = zpl_escape(price_input) or zpl_escape(price)
     printable_width = LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2)
     title_font = fitted_font_size(name, TITLE_FONT_MAX_DOTS, TITLE_FONT_MIN_DOTS, printable_width)
     price_font = fitted_font_size(
         display_price,
-        34 if marked_down else PRICE_FONT_MAX_DOTS,
+        28 if marked_down else 34,
         PRICE_FONT_MIN_DOTS,
         printable_width,
     )
@@ -421,7 +423,9 @@ def build_preroll_label_zpl(
 
     z = ["^XA", f"^PW{LABEL_WIDTH_DOTS}", f"^LL{LABEL_HEIGHT_DOTS}", f"^MD{darkness}"]
     z += draw_centered_text(name, LABEL_MARGIN_DOTS + y_offset, title_font)
-    z += draw_centered_text(display_price, 52 + y_offset, price_font)
+    if strain_type:
+        z += draw_centered_text(strain_type, 47 + y_offset, DETAILS_FONT_DOTS)
+    z += draw_centered_text(display_price, 64 + y_offset, price_font)
     if marked_down:
         z += draw_strikethrough_text(f"WAS {original_price}", 90 + y_offset, 12)
     z += draw_centered_text(
@@ -461,6 +465,7 @@ def build_zpl_2x1_centered(
             vertical_offset=vertical_offset,
             marked_down=marked_down,
             original_price=original_price,
+            strain_type=strain_type,
             price_input=price_input,
         )
     return build_price_label_zpl(
@@ -1275,7 +1280,7 @@ MOBILE_HTML = r"""
       <input type="checkbox" id="single_preroll_label" />
       <label for="single_preroll_label" style="margin:0; font-weight:600;">Preroll — use one sticker</label>
     </div>
-    <div class="small">Combines the product name, price, and health warning on one label. Subtitle, size, and type are omitted to keep the name and price large.</div>
+    <div class="small">Combines the product name, type, price, and health warning on one label. Subtitle and size are omitted to keep the name and price large.</div>
 
     <div class="toggle">
       <input type="checkbox" id="website_draft" />

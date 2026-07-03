@@ -188,6 +188,7 @@ class MarkedDownPriceTests(unittest.TestCase):
             "$10.00",
             SAMPLE_WARNING,
             True,
+            strain_type="Sativa",
             price_input="$10.00",
             single_preroll_label=True,
         )
@@ -195,7 +196,8 @@ class MarkedDownPriceTests(unittest.TestCase):
 
         self.assertEqual(len(split_labels(zpl)), 1)
         self.assertIn("^A0N,30,30\n^FDPEACH RINGZ^FS", zpl)
-        self.assertIn("^A0N,42,42\n^FD$10.00^FS", zpl)
+        self.assertIn("^A0N,14,14\n^FDSATIVA^FS", zpl)
+        self.assertIn("^A0N,34,34\n^FD$10.00^FS", zpl)
         self.assertIn("^FDHEALTH WARNING^FS", zpl)
         self.assertEqual(
             payload.split(),
