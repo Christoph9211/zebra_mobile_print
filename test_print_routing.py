@@ -1,6 +1,8 @@
 import re
+import json
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import call, patch
 
 import main
@@ -306,6 +308,91 @@ class DeliverZplTests(unittest.TestCase):
 
         self.assertIn("3 preroll label(s)", response)
         self.assertEqual(len(split_labels(deliver.call_args.args[0])), 1)
+
+
+class CatalogDraftTests(unittest.TestCase):
+    def test_invalid_flagged_draft_does_not_print(self):
+        with self.assertRaisesRegex(ValueError, "require name"):
+            main.PrintJob(website_draft=True)
+
+    def test_only_successful_flagged_print_is_recorded(self):
+        result = {
+            "success": True, "target": "Zebra Queue", "path": "windows_queue",
+            "fallback_from": None, "fallback_error": "",
+        }
+        with TemporaryDirectory() as directory:
+            draft = Path(directory) / "catalog.jsonl"
+            with (
+                patch.object(main, "CATALOG_DRAFT_PATH", draft),
+                patch.object(main, "deliver_zpl", return_value=result),
+                patch.object(main, "record_print_attempt"),
+            ):
+                main.print_label(main.PrintJob(
+                    name="Blue Dream", category="Flower", size="3 gram",
+                    price_input="$25", website_draft=True,
+                ))
+                main.print_label(main.PrintJob())
+            self.assertEqual(len(draft.read_text(encoding="utf-8").splitlines()), 1)
+
+    def test_failed_print_is_not_recorded(self):
+        result = {
+            "success": False, "target": "Zebra Queue", "path": "windows_queue",
+            "fallback_from": None, "fallback_error": "", "error": "offline",
+        }
+        with TemporaryDirectory() as directory:
+            draft = Path(directory) / "catalog.jsonl"
+            with (
+                patch.object(main, "CATALOG_DRAFT_PATH", draft),
+                patch.object(main, "deliver_zpl", return_value=result),
+                patch.object(main, "record_print_attempt"),
+            ):
+                response = main.print_label(main.PrintJob(
+                    name="Blue Dream", category="Flower", size="1 gram",
+                    price_input="$10", website_draft=True,
+                ))
+            self.assertEqual(response.status_code, 500)
+            self.assertFalse(draft.exists())
+
+    def test_storage_failure_warns_not_to_reprint(self):
+        result = {
+            "success": True, "target": "Zebra Queue", "path": "windows_queue",
+            "fallback_from": None, "fallback_error": "",
+        }
+        with (
+            patch.object(main, "deliver_zpl", return_value=result),
+            patch.object(main, "append_catalog_draft", side_effect=OSError("disk full")),
+            patch.object(main, "record_print_attempt"),
+        ):
+            response = main.print_label(main.PrintJob(
+                name="Blue Dream", category="Flower", size="1 gram",
+                price_input="$10", website_draft=True,
+            ))
+        self.assertIn("Label printed, draft not saved; do not reprint", response)
+
+    def test_variants_group_and_newest_duplicate_wins(self):
+        with TemporaryDirectory() as directory:
+            draft = Path(directory) / "catalog.jsonl"
+            rows = [
+                {"name": "Blue Dream", "category": "Flower", "catalog_group": "", "size": "1 gram", "price": 10},
+                {"name": "blue dream", "category": "flower", "catalog_group": "", "size": "1 gram", "price": 12},
+                {"name": "Blue Dream", "category": "Flower", "catalog_group": "", "size": "3 grams", "price": 25},
+                {"name": "Super Lemon", "category": "Vapes & Carts", "catalog_group": "Live Resin Carts", "size": "1 gram", "price": 30},
+            ]
+            draft.write_text("\n".join(json.dumps(row) for row in rows) + "\nnot json\n", encoding="utf-8")
+
+            flower, vapes = main.catalog_draft_products(draft)
+
+            self.assertEqual(flower["size_options"], ["1 gram", "3 grams"])
+            self.assertEqual(flower["prices"], {"1 gram": 12, "3 grams": 25})
+            self.assertEqual(vapes["name"], "Live Resin Carts")
+            self.assertEqual(vapes["size_options"], ["Super Lemon"])
+
+    def test_grouped_category_requires_parent(self):
+        with self.assertRaisesRegex(ValueError, "parent product"):
+            main.PrintJob(
+                name="Super Lemon", category="Other", size="1 gram",
+                price_input="$20", website_draft=True,
+            )
 
 
 if __name__ == "__main__":

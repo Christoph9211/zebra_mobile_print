@@ -41,6 +41,7 @@ Enable **Preroll — use one sticker** to fit the product name, price, and compl
 
 ## Troubleshooting Notes
 
+- Website drafts are appended to `data/catalog-draft.jsonl`; set `ZPL_CATALOG_DRAFT_PATH` to override that location.
 - Set `ZPL_PRINTER_HOST` to the Zebra printer IP or hostname to make direct TCP the primary print path. Port `9100` is used by default; override it with `ZPL_PRINTER_PORT`.
 - Labels default to 2×1 inches at 203 dpi (`406×203` dots). Set `ZPL_LABEL_WIDTH_DOTS=609` for 3×1-inch media; `ZPL_LABEL_HEIGHT_DOTS` and `ZPL_LABEL_Y_OFFSET` are also configurable.
 - When direct TCP is configured, the selected `ZPL_PRINTER_NAME` or web-page Windows queue is the fallback. Fallback happens only when the direct TCP preflight fails before label data is sent.

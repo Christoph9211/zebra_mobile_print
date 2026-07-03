@@ -6,5 +6,7 @@ dist/
 wheels/
 *.egg-info
 logs/
+data/catalog-draft.jsonl
+data/catalog-draft.jsonl.lock
 # Virtual environments
 .venv
