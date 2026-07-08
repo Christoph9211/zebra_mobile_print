@@ -1232,8 +1232,8 @@ MOBILE_HTML = r"""
           <option value="Indica">Indica</option>
           <option value="Sativa">Sativa</option>
           <option value="Hybrid">Hybrid</option>
-          <option value="Indica Leaning Hybrid">Indica Leaning Hybrid</option>
-          <option value="Sativa Leaning Hybrid">Sativa Leaning Hybrid</option>
+          <option value="Indica Dominant Hybrid">Indica Dominant Hybrid</option>
+          <option value="Sativa Dominant Hybrid">Sativa Dominant Hybrid</option>
         </select>
       </div>
       <div>
@@ -1397,7 +1397,7 @@ const SIZE_SHORT_LABELS = {
   '1/8 oz': '1/8 oz',
   '1/4 oz': '1/4 oz',
 };
-const STRAIN_TYPES = ['Indica', 'Sativa', 'Hybrid', 'Indica Leaning Hybrid', 'Sativa Leaning Hybrid'];
+const STRAIN_TYPES = ['Indica', 'Sativa', 'Hybrid', 'Indica Dominant Hybrid', 'Sativa Dominant Hybrid'];
 const CATALOG_GROUPS = {
   'Vapes & Carts': ['One Gram Carts', 'One Gram Disposable', 'Two Gram Vapes'],
   Other: ['Flower Preroll', 'Infused Prerolls'],
