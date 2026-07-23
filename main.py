@@ -48,7 +48,9 @@ LABEL_MARGIN_DOTS = 16
 SECTION_GAP_DOTS = 4
 HEADER_SECTION_HEIGHT_DOTS = 52
 DETAILS_SECTION_HEIGHT_DOTS = 18
-TITLE_FONT_MAX_DOTS = 30
+STANDARD_TITLE_FONT_MAX_DOTS = 38
+STANDARD_TITLE_WITH_SUBTITLE_FONT_MAX_DOTS = 34
+PREROLL_TITLE_FONT_MAX_DOTS = 30
 TITLE_FONT_MIN_DOTS = 10
 SUBTITLE_FONT_DOTS = 15
 DETAILS_FONT_DOTS = 14
@@ -299,7 +301,11 @@ def build_price_label_zpl(
     printable_width = LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2)
     title_font = fitted_font_size(
         name,
-        maximum=TITLE_FONT_MAX_DOTS,
+        maximum=(
+            STANDARD_TITLE_WITH_SUBTITLE_FONT_MAX_DOTS
+            if subtitle
+            else STANDARD_TITLE_FONT_MAX_DOTS
+        ),
         minimum=TITLE_FONT_MIN_DOTS,
         width_dots=printable_width,
     )
@@ -329,7 +335,7 @@ def build_price_label_zpl(
     if subtitle:
         z += draw_centered_text(
             subtitle,
-            header_section["top"] + 32 + y_offset,
+            header_section["top"] + 38 + y_offset,
             SUBTITLE_FONT_DOTS,
         )
 
@@ -404,7 +410,12 @@ def build_preroll_label_zpl(
     strain_type = zpl_escape(strain_type).upper()
     display_price = zpl_escape(price_input) or zpl_escape(price)
     printable_width = LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2)
-    title_font = fitted_font_size(name, TITLE_FONT_MAX_DOTS, TITLE_FONT_MIN_DOTS, printable_width)
+    title_font = fitted_font_size(
+        name,
+        PREROLL_TITLE_FONT_MAX_DOTS,
+        TITLE_FONT_MIN_DOTS,
+        printable_width,
+    )
     price_font = fitted_font_size(
         display_price,
         28 if marked_down else 34,
@@ -552,6 +563,13 @@ JOB_STATUS_FLAGS = [
     ("restart", getattr(win32print, "JOB_STATUS_RESTART", 0x00000800)),
     ("complete", getattr(win32print, "JOB_STATUS_COMPLETE", 0x00001000)),
 ]
+
+BLOCKING_PRINTER_FLAGS = {
+    "paused", "error", "paper_jam", "paper_out", "offline", "not_available", "user_intervention",
+}
+BLOCKING_JOB_FLAGS = {
+    "error", "offline", "paperout", "blocked_device_queue", "user_intervention",
+}
 
 
 def now_iso() -> str:
@@ -705,6 +723,72 @@ def list_printer_jobs(printer_name: str) -> dict[str, Any]:
             win32print.ClosePrinter(h)
 
 
+def printer_queue_preflight(printer_name: str) -> dict[str, Any]:
+    details = get_printer_details(printer_name)
+    jobs = list_printer_jobs(printer_name)
+    if not details.get("ok"):
+        return {"ok": False, "printer": printer_name, "error": details.get("error", "Cannot open printer."), "jobs": []}
+    if not jobs.get("ok"):
+        return {"ok": False, "printer": printer_name, "error": jobs.get("error", "Cannot inspect queue."), "jobs": []}
+    printer_flags = sorted(BLOCKING_PRINTER_FLAGS.intersection(details.get("status_flags", [])))
+    blocked_jobs = [
+        job for job in jobs.get("jobs", [])
+        if BLOCKING_JOB_FLAGS.intersection(job.get("status_flags", []))
+    ]
+    ok = not printer_flags and not blocked_jobs
+    error = ""
+    if printer_flags:
+        error = f"Printer is not ready ({', '.join(printer_flags)})."
+    elif blocked_jobs:
+        error = f"Windows queue has blocked job(s): {', '.join(str(job.get('id')) for job in blocked_jobs)}."
+    return {
+        "ok": ok,
+        "printer": printer_name,
+        "printer_status_flags": details.get("status_flags", []),
+        "jobs": jobs.get("jobs", []),
+        "blocked_job_ids": [job.get("id") for job in blocked_jobs],
+        "error": error,
+    }
+
+
+def clear_printer_jobs(printer_name: str) -> dict[str, Any]:
+    h = None
+    cancelled_ids: list[int] = []
+    failed: list[dict[str, Any]] = []
+    found_ids: list[int] = []
+    try:
+        h = win32print.OpenPrinter(printer_name)
+        jobs = list(win32print.EnumJobs(h, 0, 999, 1))
+        for job in jobs:
+            job_id = int(job.get("JobId") or 0)
+            if not job_id:
+                continue
+            found_ids.append(job_id)
+            try:
+                win32print.SetJob(h, job_id, 0, None, win32print.JOB_CONTROL_CANCEL)
+                cancelled_ids.append(job_id)
+            except Exception as exc:
+                failed.append({"id": job_id, "error": format_windows_error(exc)})
+        final_jobs = list_printer_jobs(printer_name)
+        return {
+            "ok": not failed,
+            "printer": printer_name,
+            "jobs_found": found_ids,
+            "cancelled_ids": cancelled_ids,
+            "failed": failed,
+            "final_queue": final_jobs,
+        }
+    except Exception as exc:
+        return {
+            "ok": False, "printer": printer_name, "jobs_found": found_ids,
+            "cancelled_ids": cancelled_ids, "failed": [{"id": None, "error": format_windows_error(exc)}],
+            "final_queue": {"ok": False, "printer": printer_name, "jobs": []},
+        }
+    finally:
+        if h is not None:
+            win32print.ClosePrinter(h)
+
+
 def probe_direct_printer() -> dict[str, Any]:
     if not DIRECT_PRINTER_HOST:
         return {
@@ -757,14 +841,15 @@ def deliver_zpl(zpl: str, copies: int, printer: str) -> dict[str, Any]:
         "fallback_from": "",
         "fallback_error": "",
         "error": "",
+        "queue_preflight": None,
+        "spooler_documents": 0,
     }
 
     if DIRECT_PRINTER_HOST:
         probe = probe_direct_printer()
         if probe.get("ok"):
             try:
-                for _ in range(copies):
-                    send_raw_zpl_direct(zpl)
+                send_raw_zpl_direct(zpl * copies)
                 result["success"] = True
             except Exception as exc:
                 result["error"] = (
@@ -788,9 +873,17 @@ def deliver_zpl(zpl: str, copies: int, printer: str) -> dict[str, Any]:
         result["error"] = "Printer not set. Set ZPL_PRINTER_NAME or choose a Windows printer in the UI."
         return result
 
+    result["queue_preflight"] = printer_queue_preflight(printer)
+    if not result["queue_preflight"].get("ok"):
+        result["error"] = (
+            f"{result['queue_preflight'].get('error', 'Windows queue is not ready')} "
+            "Open Troubleshooting and clear the label queue before retrying."
+        )
+        return result
+
     try:
-        for _ in range(copies):
-            result["job_ids"].append(send_raw_zpl(printer, zpl))
+        result["job_ids"].append(send_raw_zpl(printer, zpl * copies))
+        result["spooler_documents"] = 1
         result["success"] = True
     except Exception as exc:
         result["error"] = str(exc)
@@ -867,6 +960,10 @@ class PrintJob(BaseModel):
 
 class TestPrintJob(BaseModel):
     printer: Optional[str] = Field(default=None, description="Windows printer name (optional)")
+
+
+class ClearQueueRequest(BaseModel):
+    printer: str = Field(min_length=1, description="Exact Windows printer queue name")
 
 
 class CatalogBackfillCandidate(BaseModel):
@@ -972,6 +1069,19 @@ def diagnostics_jobs(name: Optional[str] = Query(default=None)):
     if not printer:
         return {"ok": False, "error": "Printer not set. Choose a printer or set ZPL_PRINTER_NAME.", "jobs": []}
     return list_printer_jobs(printer)
+
+
+@app.post("/diagnostics/jobs/clear")
+def diagnostics_clear_jobs(request: ClearQueueRequest):
+    printer = request.printer.strip()
+    if not printer:
+        return JSONResponse({"ok": False, "error": "Printer name is required."}, status_code=400)
+    result = clear_printer_jobs(printer)
+    record_print_attempt({
+        "source": "queue_clear", "printer": printer, "success": result["ok"],
+        "cancelled_ids": result["cancelled_ids"], "failed": result["failed"],
+    })
+    return JSONResponse(result, status_code=200 if result["ok"] else 500)
 
 
 @app.get("/diagnostics/logs")
@@ -1167,6 +1277,7 @@ MOBILE_HTML = r"""
     .diagnostic-actions button { flex: 1; font-size: 16px; padding: 11px 10px; border-radius: 12px; }
     #runDiagnosticsBtn { background: #e8eef8; color: #18365f; }
     #testLabelBtn { background: #111; color: #fff; }
+    #clearQueueBtn { background: #ffdede; color: #8b0000; }
     .diag-summary { display: grid; gap: 8px; margin-top: 10px; }
     .diag-row { padding: 10px; border-radius: 10px; border: 1px solid #ddd; background: #fff; font-size: 14px; line-height: 1.35; }
     .diag-ok { border-color: #b9ddc2; background: #f2fbf4; color: #164123; }
@@ -1200,6 +1311,7 @@ MOBILE_HTML = r"""
         <div class="diagnostic-actions">
           <button id="runDiagnosticsBtn" type="button">Run Diagnostics</button>
           <button id="testLabelBtn" type="button">Send Test Label</button>
+          <button id="clearQueueBtn" type="button">Clear Label Queue</button>
         </div>
         <div id="diagnosticsSummary" class="diag-summary"></div>
         <pre id="diagnosticsDetails"></pre>
@@ -1445,7 +1557,8 @@ function addDiagnosticRow(container, level, text) {
 }
 
 function latestLogForPrinter(logs, printer) {
-  const rows = (logs && logs.body && Array.isArray(logs.body.logs)) ? logs.body.logs : [];
+  const rows = ((logs && logs.body && Array.isArray(logs.body.logs)) ? logs.body.logs : [])
+    .filter((row) => row && row.source !== 'queue_clear');
   if (!printer) {
     return rows[0] || null;
   }
@@ -1572,6 +1685,30 @@ async function sendTestLabel() {
   const text = await res.text();
   setStatus(text);
   await runDiagnostics(text);
+}
+
+async function clearLabelQueue() {
+  setTroubleshootingOpen(true);
+  const printer = selectedPrinter();
+  if (!printer) {
+    setStatus('Choose a Windows printer queue first.');
+    return;
+  }
+  const jobs = await fetchJson(`/diagnostics/jobs?name=${encodeURIComponent(printer)}`);
+  const count = jobs.body && Array.isArray(jobs.body.jobs) ? jobs.body.jobs.length : 0;
+  if (!window.confirm(`Cancel ${count} queued job(s) from "${printer}"? A job may have partially printed.`)) return;
+  setStatus(`Clearing ${printer}...`);
+  const result = await fetchJson('/diagnostics/jobs/clear', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({printer}),
+  });
+  const cancelled = result.body && Array.isArray(result.body.cancelled_ids) ? result.body.cancelled_ids.length : 0;
+  const failed = result.body && Array.isArray(result.body.failed) ? result.body.failed.length : 0;
+  const message = result.ok
+    ? `Cleared ${cancelled} queued job(s). Check the printer before retrying.`
+    : `Cleared ${cancelled} job(s), but ${failed} could not be cancelled. Check Windows printer permissions.`;
+  await runDiagnostics(message);
 }
 
 function toInt(value, fallback) {
@@ -2286,6 +2423,7 @@ document.getElementById('importBacklogBtn').addEventListener('click', importBack
 document.getElementById('troubleshootingToggle').addEventListener('click', toggleTroubleshooting);
 document.getElementById('runDiagnosticsBtn').addEventListener('click', runDiagnostics);
 document.getElementById('testLabelBtn').addEventListener('click', sendTestLabel);
+document.getElementById('clearQueueBtn').addEventListener('click', clearLabelQueue);
 document.getElementById('historySearch').addEventListener('input', renderHistory);
 document.getElementById('clearHistorySearchBtn').addEventListener('click', () => {
   document.getElementById('historySearch').value = '';

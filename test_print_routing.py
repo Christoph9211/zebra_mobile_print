@@ -42,7 +42,10 @@ class MarkedDownPriceTests(unittest.TestCase):
         self.assertNotIn("PRICE REDUCED", price_label)
         self.assertNotIn("^FDWAS ", price_label)
         self.assertNotIn("^GB", price_label)
-        self.assertIn("^FDCHERRY PIE^FS", price_label)
+        self.assertIn(
+            "^FO16,22\n^FB374,1,0,C,0\n^A0N,38,38\n^FDCHERRY PIE^FS",
+            price_label,
+        )
         self.assertIn("^FO16,64\n^FB374,1,0,C,0\n^A0N,20,20\n^FD1g - HYBRID^FS", price_label)
         self.assertIn("^FO16,112\n^FB374,1,0,C,0\n^A0N,42,42\n^FD$25.00^FS", price_label)
         self.assertNotIn("HEALTH WARNING", price_label)
@@ -69,6 +72,15 @@ class MarkedDownPriceTests(unittest.TestCase):
 
         for zpl in (subtitled, marked_down):
             self.assertIn("^FO16,78\n^FB374,1,0,C,0\n^A0N,14,14\n^FD1g - HYBRID^FS", zpl)
+
+        self.assertIn(
+            "^FO16,22\n^FB374,1,0,C,0\n^A0N,34,34\n^FDCHERRY PIE^FS",
+            subtitled,
+        )
+        self.assertIn(
+            "^FO16,60\n^FB374,1,0,C,0\n^A0N,15,15\n^FDLive Rosin^FS",
+            subtitled,
+        )
 
     def test_peach_ringz_label_matches_golden_output(self):
         zpl = main.build_zpl_2x1_centered(
@@ -218,13 +230,14 @@ class DeliverZplTests(unittest.TestCase):
 
         self.assertTrue(result["success"])
         self.assertEqual(result["path"], "direct_tcp")
-        self.assertEqual(direct.call_args_list, [call(pair), call(pair)])
+        direct.assert_called_once_with(pair * 2)
         windows.assert_not_called()
 
     def test_failed_preflight_falls_back_to_windows(self):
         with (
             patch.object(main, "DIRECT_PRINTER_HOST", "zebra.local"),
             patch.object(main, "probe_direct_printer", return_value={"ok": False, "error": "timed out"}),
+            patch.object(main, "printer_queue_preflight", return_value={"ok": True, "jobs": []}),
             patch.object(main, "send_raw_zpl", return_value=42) as windows,
         ):
             result = main.deliver_zpl("^XA^XZ", 1, "Zebra Queue")
@@ -264,6 +277,7 @@ class DeliverZplTests(unittest.TestCase):
     def test_windows_only_mode(self):
         with (
             patch.object(main, "DIRECT_PRINTER_HOST", ""),
+            patch.object(main, "printer_queue_preflight", return_value={"ok": True, "jobs": []}),
             patch.object(main, "send_raw_zpl", return_value=7) as windows,
         ):
             result = main.deliver_zpl("^XA^XZ", 1, "Zebra Queue")
@@ -272,6 +286,72 @@ class DeliverZplTests(unittest.TestCase):
         self.assertEqual(result["path"], "windows_queue")
         self.assertEqual(result["job_ids"], [7])
         windows.assert_called_once_with("Zebra Queue", "^XA^XZ")
+
+    def test_multiple_windows_copies_use_one_spooler_document_in_order(self):
+        pair = "^XA^FDPRICE^FS^XZ\n^XA^FDWARNING^FS^XZ\n"
+        with (
+            patch.object(main, "DIRECT_PRINTER_HOST", ""),
+            patch.object(main, "printer_queue_preflight", return_value={"ok": True, "jobs": []}),
+            patch.object(main, "send_raw_zpl", return_value=9) as windows,
+        ):
+            result = main.deliver_zpl(pair, 3, "Zebra Queue")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["spooler_documents"], 1)
+        windows.assert_called_once_with("Zebra Queue", pair * 3)
+
+    def test_blocked_queue_rejects_new_windows_job(self):
+        preflight = {"ok": False, "error": "Windows queue has blocked job(s): 12.", "blocked_job_ids": [12]}
+        with (
+            patch.object(main, "DIRECT_PRINTER_HOST", ""),
+            patch.object(main, "printer_queue_preflight", return_value=preflight),
+            patch.object(main, "send_raw_zpl") as windows,
+        ):
+            result = main.deliver_zpl("^XA^XZ", 1, "Zebra Queue")
+
+        self.assertFalse(result["success"])
+        self.assertIn("clear the label queue", result["error"])
+        windows.assert_not_called()
+
+    def test_queue_preflight_detects_offline_printer_and_blocked_job(self):
+        with (
+            patch.object(main, "get_printer_details", return_value={"ok": True, "status_flags": ["offline"]}),
+            patch.object(main, "list_printer_jobs", return_value={
+                "ok": True, "jobs": [{"id": 5, "status_flags": ["blocked_device_queue"]}],
+            }),
+        ):
+            result = main.printer_queue_preflight("Zebra Queue")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["blocked_job_ids"], [5])
+
+    def test_clear_queue_cancels_only_enumerated_jobs(self):
+        jobs = [{"JobId": 3}, {"JobId": 4}]
+        with (
+            patch.object(main.win32print, "OpenPrinter", return_value="handle"),
+            patch.object(main.win32print, "EnumJobs", return_value=jobs),
+            patch.object(main.win32print, "SetJob") as cancel,
+            patch.object(main.win32print, "ClosePrinter"),
+            patch.object(main, "list_printer_jobs", return_value={"ok": True, "printer": "Zebra Queue", "jobs": []}),
+        ):
+            result = main.clear_printer_jobs("Zebra Queue")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["cancelled_ids"], [3, 4])
+        self.assertEqual([row.args[1] for row in cancel.call_args_list], [3, 4])
+
+    def test_clear_queue_reports_individual_cancel_failure(self):
+        with (
+            patch.object(main.win32print, "OpenPrinter", return_value="handle"),
+            patch.object(main.win32print, "EnumJobs", return_value=[{"JobId": 8}]),
+            patch.object(main.win32print, "SetJob", side_effect=RuntimeError("access denied")),
+            patch.object(main.win32print, "ClosePrinter"),
+            patch.object(main, "list_printer_jobs", return_value={"ok": True, "printer": "Zebra Queue", "jobs": [{"id": 8}]}),
+        ):
+            result = main.clear_printer_jobs("Zebra Queue")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["failed"][0]["id"], 8)
 
     def test_print_response_reports_pairs_and_physical_labels(self):
         result = {

@@ -1,6 +1,8 @@
 param(
     [int]$Port = $env:ZPL_SERVER_PORT,
     [string]$HostUrl = "http://127.0.0.1",
+    [switch]$ClearPrintQueue,
+    [string]$PrinterName = $env:ZPL_PRINTER_NAME,
     [switch]$NoPause
 )
 
@@ -85,6 +87,19 @@ try {
 
     if (-not (Test-Path -LiteralPath $LogDir)) {
         New-Item -ItemType Directory -Path $LogDir | Out-Null
+    }
+
+    if ($ClearPrintQueue) {
+        if (-not $PrinterName) {
+            throw "-ClearPrintQueue requires -PrinterName or the ZPL_PRINTER_NAME environment variable."
+        }
+        Write-Step "Clearing the selected Windows label queue"
+        $queuedJobs = @(Get-PrintJob -PrinterName $PrinterName -ErrorAction Stop)
+        foreach ($queuedJob in $queuedJobs) {
+            Remove-PrintJob -InputObject $queuedJob -ErrorAction Stop
+        }
+        Write-Good "Cancelled $($queuedJobs.Count) queued job(s) from '$PrinterName'."
+        Write-Host "A cancelled job may already have partially printed; check the printer before retrying."
     }
 
     Write-Step "Checking for the current server"

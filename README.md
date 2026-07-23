@@ -12,6 +12,14 @@ If the label page stops responding or printing is acting stuck, use the simple r
 
 The reset does not erase saved browser history, defaults, strain/type memory, or label settings. It only restarts the local Python print server.
 
+To clear a stuck label queue when the web page is unavailable, run:
+
+```powershell
+.\Reset-Label-Print-Server.ps1 -ClearPrintQueue -PrinterName "ZDesigner ZD411-203dpi ZPL"
+```
+
+This cancels jobs only from the named printer and then restarts the server. A cancelled job may already have partially printed, so check the printer before retrying. Windows may require permission to manage the queue.
+
 ## Local and Remote URLs
 
 On the office PC, open:
@@ -47,9 +55,12 @@ Use **Review Label Backlog** on the office PC and choose the website's current `
 
 - Website drafts are appended to `data/catalog-draft.jsonl`; set `ZPL_CATALOG_DRAFT_PATH` to override that location.
 - Set `ZPL_PRINTER_HOST` to the Zebra printer IP or hostname to make direct TCP the primary print path. Port `9100` is used by default; override it with `ZPL_PRINTER_PORT`.
+- Reserve the Zebra's address in DHCP (or assign a static address) before setting `ZPL_PRINTER_HOST`; otherwise a later address change will force printing back through Windows.
 - Labels default to 2×1 inches at 203 dpi (`406×203` dots). Set `ZPL_LABEL_WIDTH_DOTS=609` for 3×1-inch media; `ZPL_LABEL_HEIGHT_DOTS` and `ZPL_LABEL_Y_OFFSET` are also configurable.
 - When direct TCP is configured, the selected `ZPL_PRINTER_NAME` or web-page Windows queue is the fallback. Fallback happens only when the direct TCP preflight fails before label data is sent.
 - If direct transmission starts and then fails, the server does not retry through Windows because the printer may already have received the label. Check the printer before retrying manually to avoid duplicate labels.
 - If the reset window says another program is using port `8787`, ask someone technical to check that process.
 - If the reset starts the server but the health check fails, check `logs/label-print-server.err.log`.
 - If the web app is reachable but labels do not print, open `Troubleshooting`; it shows direct TCP status, Windows fallback status, and the route used by the last print.
+- If Windows reports blocked jobs, use **Clear Label Queue** under `Troubleshooting`, confirm the selected printer and job count, check the printer for any partially printed label, and then retry once.
+- The server batches all requested copies into one RAW Windows spooler document so a multi-copy request does not create many separate queue entries.
