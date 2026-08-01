@@ -8,6 +8,44 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function ConvertTo-ProcessArgument([string]$Value) {
+    return '"' + $Value.Replace('"', '\"') + '"'
+}
+
+$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$currentPrincipal = [Security.Principal.WindowsPrincipal]::new($currentIdentity)
+$isAdministrator = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdministrator) {
+    $elevationArguments = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", (ConvertTo-ProcessArgument $PSCommandPath)
+    )
+    if ($PSBoundParameters.ContainsKey("Port")) {
+        $elevationArguments += @("-Port", [string]$Port)
+    }
+    if ($PSBoundParameters.ContainsKey("HostUrl")) {
+        $elevationArguments += @("-HostUrl", (ConvertTo-ProcessArgument $HostUrl))
+    }
+    if ($ClearPrintQueue) {
+        $elevationArguments += "-ClearPrintQueue"
+    }
+    if ($PSBoundParameters.ContainsKey("PrinterName")) {
+        $elevationArguments += @("-PrinterName", (ConvertTo-ProcessArgument $PrinterName))
+    }
+    if ($NoPause) {
+        $elevationArguments += "-NoPause"
+    }
+
+    try {
+        $elevatedProcess = Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru -ArgumentList ($elevationArguments -join " ")
+        exit $elevatedProcess.ExitCode
+    } catch {
+        Write-Error "Administrator permission is required to start the label server with print-queue reset support."
+        exit 1
+    }
+}
+
 if (-not $Port) {
     $Port = 8787
 }
@@ -90,16 +128,20 @@ try {
     }
 
     if ($ClearPrintQueue) {
-        if (-not $PrinterName) {
-            throw "-ClearPrintQueue requires -PrinterName or the ZPL_PRINTER_NAME environment variable."
+        Write-Step "Resetting the Windows Print Spooler"
+        Write-Warn "This removes queued jobs for every Windows printer on this PC."
+        $SpoolDirectory = Join-Path $env:SystemRoot "System32\spool\PRINTERS"
+        try {
+            Stop-Service -Name Spooler -Force -ErrorAction Stop
+            $queuedFiles = @(Get-ChildItem -LiteralPath $SpoolDirectory -File -Force -ErrorAction Stop)
+            foreach ($queuedFile in $queuedFiles) {
+                Remove-Item -LiteralPath $queuedFile.FullName -Force -ErrorAction Stop
+            }
+        } finally {
+            Start-Service -Name Spooler -ErrorAction Stop
         }
-        Write-Step "Clearing the selected Windows label queue"
-        $queuedJobs = @(Get-PrintJob -PrinterName $PrinterName -ErrorAction Stop)
-        foreach ($queuedJob in $queuedJobs) {
-            Remove-PrintJob -InputObject $queuedJob -ErrorAction Stop
-        }
-        Write-Good "Cancelled $($queuedJobs.Count) queued job(s) from '$PrinterName'."
-        Write-Host "A cancelled job may already have partially printed; check the printer before retrying."
+        Write-Good "Print Spooler restarted and $($queuedFiles.Count) queued spool file(s) were removed."
+        Write-Host "A queued job may already have partially printed; check every printer before retrying."
     }
 
     Write-Step "Checking for the current server"
@@ -131,17 +173,25 @@ try {
     }
 
     Write-Step "Starting the label print server"
-    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $pythonCommand) {
-        $pythonCommand = Get-Command py -ErrorAction SilentlyContinue
-    }
-    if (-not $pythonCommand) {
-        throw "Could not find Python. Make sure Python is installed and available from the Start menu/terminal."
+    $uvCommand = Get-Command uv -ErrorAction SilentlyContinue
+    if ($uvCommand) {
+        $serverFilePath = $uvCommand.Source
+        $serverArguments = @("run", "python", "`"$MainPath`"")
+    } else {
+        $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $pythonCommand) {
+            $pythonCommand = Get-Command py -ErrorAction SilentlyContinue
+        }
+        if (-not $pythonCommand) {
+            throw "Could not find uv or Python. Make sure uv is installed and available from the Start menu/terminal."
+        }
+        $serverFilePath = $pythonCommand.Source
+        $serverArguments = @("`"$MainPath`"")
     }
 
     $startInfo = @{
-        FilePath = $pythonCommand.Source
-        ArgumentList = @("`"$MainPath`"")
+        FilePath = $serverFilePath
+        ArgumentList = $serverArguments
         WorkingDirectory = $ScriptDir
         RedirectStandardOutput = $OutLog
         RedirectStandardError = $ErrLog

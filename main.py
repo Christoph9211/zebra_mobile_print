@@ -4,12 +4,15 @@ import msvcrt
 import os
 import re
 import socket
+import stat
+import subprocess
 import textwrap
 import time
 from collections import deque
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from threading import Lock
 from typing import Any, Optional
 
 from fastapi import FastAPI, Query
@@ -68,6 +71,8 @@ PREROLL_MARKDOWN_WARNING_TOP_DOTS = 126
 WARNING_MAX_CHARACTERS = 600
 PRINT_LOG_LIMIT = 50
 PRINT_ATTEMPT_LOG: deque[dict[str, Any]] = deque(maxlen=PRINT_LOG_LIMIT)
+SPOOLER_COMMAND_TIMEOUT_SECONDS = 45
+SPOOLER_OPERATION_LOCK = Lock()
 CATALOG_DRAFT_PATH = Path(os.environ.get("ZPL_CATALOG_DRAFT_PATH", "data/catalog-draft.jsonl"))
 GROUPED_CATEGORIES = {"vapes & carts", "other"}
 CATALOG_GROUPS = {
@@ -789,6 +794,108 @@ def clear_printer_jobs(printer_name: str) -> dict[str, Any]:
             win32print.ClosePrinter(h)
 
 
+def windows_spool_directory() -> Path:
+    windows_root = Path(os.environ.get("SystemRoot", r"C:\Windows")).resolve()
+    return windows_root / "System32" / "spool" / "PRINTERS"
+
+
+def run_spooler_service_command(action: str) -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            ["net.exe", action, "spooler"],
+            capture_output=True,
+            text=True,
+            timeout=SPOOLER_COMMAND_TIMEOUT_SECONDS,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "returncode": None, "output": f"Command timed out after {SPOOLER_COMMAND_TIMEOUT_SECONDS}s."}
+    except Exception as exc:
+        return {"ok": False, "returncode": None, "output": format_windows_error(exc)}
+
+    output = "\n".join(part.strip() for part in (completed.stdout, completed.stderr) if part.strip())
+    return {
+        "ok": completed.returncode == 0,
+        "returncode": completed.returncode,
+        "output": output[-2000:],
+    }
+
+
+def reset_windows_print_spooler(printer_name: str) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "ok": False,
+        "printer": printer_name,
+        "scope": "all_windows_printers",
+        "spool_directory": str(windows_spool_directory()),
+        "files_deleted": 0,
+        "failed_files": [],
+        "stop": None,
+        "start": None,
+        "error": "",
+    }
+    if not SPOOLER_OPERATION_LOCK.acquire(blocking=False):
+        result["error"] = "Another Windows print or spooler reset operation is already in progress. Try again in a moment."
+        return result
+
+    service_command_attempted = False
+    try:
+        service_command_attempted = True
+        result["stop"] = run_spooler_service_command("stop")
+        if not result["stop"]["ok"]:
+            details = result["stop"].get("output") or "Windows did not provide an error message."
+            result["error"] = (
+                "Windows could not stop the Print Spooler. The label server must be running as Administrator. "
+                "Use 'Reset Label Printer.bat', approve the Windows prompt, and try again. "
+                f"Details: {details}"
+            )
+            return result
+
+        spool_directory = windows_spool_directory()
+        if not spool_directory.is_dir():
+            result["error"] = f"Windows spool directory was not found: {spool_directory}"
+            return result
+
+        try:
+            queued_files = list(spool_directory.iterdir())
+        except Exception as exc:
+            result["error"] = f"Windows spool directory could not be read: {format_windows_error(exc)}"
+            return result
+
+        for queued_file in queued_files:
+            if not queued_file.is_file():
+                continue
+            try:
+                queued_file.chmod(stat.S_IWRITE)
+                queued_file.unlink()
+                result["files_deleted"] += 1
+            except Exception as exc:
+                result["failed_files"].append({
+                    "name": queued_file.name,
+                    "error": format_windows_error(exc),
+                })
+
+        if result["failed_files"]:
+            result["error"] = (
+                f"Removed {result['files_deleted']} spool file(s), but "
+                f"{len(result['failed_files'])} file(s) could not be removed."
+            )
+        else:
+            result["ok"] = True
+        return result
+    finally:
+        if service_command_attempted:
+            result["start"] = run_spooler_service_command("start")
+            if not result["start"]["ok"]:
+                details = result["start"].get("output") or "Windows did not provide an error message."
+                result["ok"] = False
+                result["error"] = (
+                    "The queue reset ran, but Windows could not restart the Print Spooler. "
+                    "Open Command Prompt as Administrator and run 'net start spooler'. "
+                    f"Details: {details}"
+                )
+        SPOOLER_OPERATION_LOCK.release()
+
+
 def probe_direct_printer() -> dict[str, Any]:
     if not DIRECT_PRINTER_HOST:
         return {
@@ -873,20 +980,21 @@ def deliver_zpl(zpl: str, copies: int, printer: str) -> dict[str, Any]:
         result["error"] = "Printer not set. Set ZPL_PRINTER_NAME or choose a Windows printer in the UI."
         return result
 
-    result["queue_preflight"] = printer_queue_preflight(printer)
-    if not result["queue_preflight"].get("ok"):
-        result["error"] = (
-            f"{result['queue_preflight'].get('error', 'Windows queue is not ready')} "
-            "Open Troubleshooting and clear the label queue before retrying."
-        )
-        return result
+    with SPOOLER_OPERATION_LOCK:
+        result["queue_preflight"] = printer_queue_preflight(printer)
+        if not result["queue_preflight"].get("ok"):
+            result["error"] = (
+                f"{result['queue_preflight'].get('error', 'Windows queue is not ready')} "
+                "Open Troubleshooting and reset the Windows print spooler before retrying."
+            )
+            return result
 
-    try:
-        result["job_ids"].append(send_raw_zpl(printer, zpl * copies))
-        result["spooler_documents"] = 1
-        result["success"] = True
-    except Exception as exc:
-        result["error"] = str(exc)
+        try:
+            result["job_ids"].append(send_raw_zpl(printer, zpl * copies))
+            result["spooler_documents"] = 1
+            result["success"] = True
+        except Exception as exc:
+            result["error"] = str(exc)
     return result
 
 
@@ -964,6 +1072,10 @@ class TestPrintJob(BaseModel):
 
 class ClearQueueRequest(BaseModel):
     printer: str = Field(min_length=1, description="Exact Windows printer queue name")
+
+
+class ResetSpoolerRequest(BaseModel):
+    printer: Optional[str] = Field(default=None, description="Selected Windows printer, for diagnostics context only")
 
 
 class CatalogBackfillCandidate(BaseModel):
@@ -1076,10 +1188,23 @@ def diagnostics_clear_jobs(request: ClearQueueRequest):
     printer = request.printer.strip()
     if not printer:
         return JSONResponse({"ok": False, "error": "Printer name is required."}, status_code=400)
-    result = clear_printer_jobs(printer)
+    with SPOOLER_OPERATION_LOCK:
+        result = clear_printer_jobs(printer)
     record_print_attempt({
         "source": "queue_clear", "printer": printer, "success": result["ok"],
         "cancelled_ids": result["cancelled_ids"], "failed": result["failed"],
+    })
+    return JSONResponse(result, status_code=200 if result["ok"] else 500)
+
+
+@app.post("/diagnostics/spooler/reset")
+def diagnostics_reset_spooler(request: ResetSpoolerRequest):
+    printer = (request.printer or "").strip()
+    result = reset_windows_print_spooler(printer)
+    record_print_attempt({
+        "source": "spooler_reset", "printer": printer, "success": result["ok"],
+        "scope": result["scope"], "files_deleted": result["files_deleted"],
+        "failed_files": result["failed_files"], "error": result["error"],
     })
     return JSONResponse(result, status_code=200 if result["ok"] else 500)
 
@@ -1307,11 +1432,11 @@ MOBILE_HTML = r"""
         <span id="troubleshootingChevron">Show</span>
       </button>
       <div id="troubleshootingContent" class="collapsible-content" hidden>
-        <div class="small">Check the direct TCP primary path, Windows queue fallback, and the route used by recent prints.</div>
+        <div class="small">Check the direct TCP primary path, Windows queue fallback, and the route used by recent prints. Resetting the spooler removes every queued Windows print job on this PC.</div>
         <div class="diagnostic-actions">
           <button id="runDiagnosticsBtn" type="button">Run Diagnostics</button>
           <button id="testLabelBtn" type="button">Send Test Label</button>
-          <button id="clearQueueBtn" type="button">Clear Label Queue</button>
+          <button id="clearQueueBtn" type="button">Reset Windows Print Queue</button>
         </div>
         <div id="diagnosticsSummary" class="diag-summary"></div>
         <pre id="diagnosticsDetails"></pre>
@@ -1476,7 +1601,7 @@ MOBILE_HTML = r"""
 const HISTORY_KEY = 'zebra_label_history_v1';
 const DEFAULTS_KEY = 'zebra_label_defaults_v1';
 const STRAIN_MEMORY_KEY = 'zebra_strain_type_memory_v1';
-const MAX_HISTORY = 100;
+const MAX_HISTORY = 500;
 const HISTORY_SCHEMA_VERSION = 1;
 const STRAIN_MEMORY_SCHEMA_VERSION = 1;
 const LIMITS = {
@@ -1687,27 +1812,29 @@ async function sendTestLabel() {
   await runDiagnostics(text);
 }
 
-async function clearLabelQueue() {
+async function resetWindowsPrintQueue() {
   setTroubleshootingOpen(true);
   const printer = selectedPrinter();
-  if (!printer) {
-    setStatus('Choose a Windows printer queue first.');
-    return;
+  let count = 0;
+  if (printer) {
+    const jobs = await fetchJson(`/diagnostics/jobs?name=${encodeURIComponent(printer)}`);
+    count = jobs.body && Array.isArray(jobs.body.jobs) ? jobs.body.jobs.length : 0;
   }
-  const jobs = await fetchJson(`/diagnostics/jobs?name=${encodeURIComponent(printer)}`);
-  const count = jobs.body && Array.isArray(jobs.body.jobs) ? jobs.body.jobs.length : 0;
-  if (!window.confirm(`Cancel ${count} queued job(s) from "${printer}"? A job may have partially printed.`)) return;
-  setStatus(`Clearing ${printer}...`);
-  const result = await fetchJson('/diagnostics/jobs/clear', {
+  const queueContext = printer
+    ? `The selected queue, "${printer}", currently reports ${count} job(s).`
+    : 'Windows printer details are unavailable, but the machine-wide reset can still run.';
+  const warning = `Restart the Windows Print Spooler and remove ALL queued print jobs on this PC? ${queueContext} Every printer queue will be cleared. A job may have partially printed.`;
+  if (!window.confirm(warning)) return;
+  setStatus('Stopping the Windows Print Spooler and clearing queued jobs...');
+  const result = await fetchJson('/diagnostics/spooler/reset', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({printer}),
+    body: JSON.stringify({printer: printer || null}),
   });
-  const cancelled = result.body && Array.isArray(result.body.cancelled_ids) ? result.body.cancelled_ids.length : 0;
-  const failed = result.body && Array.isArray(result.body.failed) ? result.body.failed.length : 0;
+  const deleted = result.body && Number.isFinite(result.body.files_deleted) ? result.body.files_deleted : 0;
   const message = result.ok
-    ? `Cleared ${cancelled} queued job(s). Check the printer before retrying.`
-    : `Cleared ${cancelled} job(s), but ${failed} could not be cancelled. Check Windows printer permissions.`;
+    ? `Windows Print Spooler restarted and ${deleted} queued spool file(s) were removed. Check every printer before retrying.`
+    : (result.body && result.body.error ? result.body.error : 'Windows print queue reset failed.');
   await runDiagnostics(message);
 }
 
@@ -2423,7 +2550,7 @@ document.getElementById('importBacklogBtn').addEventListener('click', importBack
 document.getElementById('troubleshootingToggle').addEventListener('click', toggleTroubleshooting);
 document.getElementById('runDiagnosticsBtn').addEventListener('click', runDiagnostics);
 document.getElementById('testLabelBtn').addEventListener('click', sendTestLabel);
-document.getElementById('clearQueueBtn').addEventListener('click', clearLabelQueue);
+document.getElementById('clearQueueBtn').addEventListener('click', resetWindowsPrintQueue);
 document.getElementById('historySearch').addEventListener('input', renderHistory);
 document.getElementById('clearHistorySearchBtn').addEventListener('click', () => {
   document.getElementById('historySearch').value = '';

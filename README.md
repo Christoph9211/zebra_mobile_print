@@ -6,19 +6,20 @@ This app runs a small local print server for Zebra ZPL labels.
 
 If the label page stops responding or printing is acting stuck, use the simple reset shortcut on the office PC:
 
-1. Double-click `Reset Label Print Server.bat`.
-2. Wait for the message `Server restarted successfully.`
-3. Refresh the label page in the browser.
+1. Double-click `Reset Label Printer.bat`.
+2. Approve the Windows administrator prompt. The server needs this permission so the web app can restart a stuck Print Spooler.
+3. Wait for the message `Server restarted successfully.`
+4. Refresh the label page in the browser.
 
 The reset does not erase saved browser history, defaults, strain/type memory, or label settings. It only restarts the local Python print server.
 
 To clear a stuck label queue when the web page is unavailable, run:
 
 ```powershell
-.\Reset-Label-Print-Server.ps1 -ClearPrintQueue -PrinterName "ZDesigner ZD411-203dpi ZPL"
+.\Reset-Label-Print-Server.ps1 -ClearPrintQueue
 ```
 
-This cancels jobs only from the named printer and then restarts the server. A cancelled job may already have partially printed, so check the printer before retrying. Windows may require permission to manage the queue.
+This stops the Windows Print Spooler, removes its queued spool files, starts the spooler again, and then restarts the server. It clears jobs for every Windows printer on the PC. A queued job may already have partially printed, so check every printer before retrying.
 
 ## Local and Remote URLs
 
@@ -62,5 +63,6 @@ Use **Review Label Backlog** on the office PC and choose the website's current `
 - If the reset window says another program is using port `8787`, ask someone technical to check that process.
 - If the reset starts the server but the health check fails, check `logs/label-print-server.err.log`.
 - If the web app is reachable but labels do not print, open `Troubleshooting`; it shows direct TCP status, Windows fallback status, and the route used by the last print.
-- If Windows reports blocked jobs, use **Clear Label Queue** under `Troubleshooting`, confirm the selected printer and job count, check the printer for any partially printed label, and then retry once.
+- If Windows reports blocked jobs, use **Reset Windows Print Queue** under `Troubleshooting`. The confirmation is machine-wide: it restarts the Print Spooler and removes queued jobs for every Windows printer on the PC. Check the printers for any partially printed job, then retry once.
+- If the web reset reports that Administrator permission is required, start the server with `Reset Label Printer.bat`, approve the Windows prompt, and try the button again. A development server started with `uv run main.py` is not automatically elevated.
 - The server batches all requested copies into one RAW Windows spooler document so a multi-copy request does not create many separate queue entries.

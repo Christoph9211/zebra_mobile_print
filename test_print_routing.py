@@ -310,7 +310,7 @@ class DeliverZplTests(unittest.TestCase):
             result = main.deliver_zpl("^XA^XZ", 1, "Zebra Queue")
 
         self.assertFalse(result["success"])
-        self.assertIn("clear the label queue", result["error"])
+        self.assertIn("reset the Windows print spooler", result["error"])
         windows.assert_not_called()
 
     def test_queue_preflight_detects_offline_printer_and_blocked_job(self):
@@ -352,6 +352,88 @@ class DeliverZplTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["failed"][0]["id"], 8)
+
+    def test_spooler_reset_stops_service_deletes_files_and_restarts(self):
+        command_results = [
+            {"ok": True, "returncode": 0, "output": "stopped"},
+            {"ok": True, "returncode": 0, "output": "started"},
+        ]
+        with TemporaryDirectory() as directory:
+            spool_directory = Path(directory)
+            (spool_directory / "00001.SHD").write_text("shadow", encoding="utf-8")
+            (spool_directory / "00001.SPL").write_text("print", encoding="utf-8")
+            (spool_directory / "do-not-delete").mkdir()
+            with (
+                patch.object(main, "windows_spool_directory", return_value=spool_directory),
+                patch.object(main, "run_spooler_service_command", side_effect=command_results) as service,
+            ):
+                result = main.reset_windows_print_spooler("Zebra Queue")
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["scope"], "all_windows_printers")
+            self.assertEqual(result["files_deleted"], 2)
+            self.assertEqual(list(spool_directory.iterdir()), [spool_directory / "do-not-delete"])
+            service.assert_has_calls([call("stop"), call("start")])
+
+    def test_spooler_reset_restarts_service_when_file_delete_fails(self):
+        command_results = [
+            {"ok": True, "returncode": 0, "output": "stopped"},
+            {"ok": True, "returncode": 0, "output": "started"},
+        ]
+        with TemporaryDirectory() as directory:
+            spool_directory = Path(directory)
+            queued_file = spool_directory / "00002.SPL"
+            queued_file.write_text("print", encoding="utf-8")
+            with (
+                patch.object(main, "windows_spool_directory", return_value=spool_directory),
+                patch.object(main, "run_spooler_service_command", side_effect=command_results) as service,
+                patch.object(Path, "unlink", side_effect=PermissionError("access denied")),
+            ):
+                result = main.reset_windows_print_spooler("Zebra Queue")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["failed_files"][0]["name"], "00002.SPL")
+        service.assert_has_calls([call("stop"), call("start")])
+
+    def test_spooler_reset_explains_admin_requirement_when_stop_fails(self):
+        command_results = [
+            {"ok": False, "returncode": 2, "output": "System error 5. Access is denied."},
+            {"ok": True, "returncode": 0, "output": "started"},
+        ]
+        with (
+            patch.object(main, "run_spooler_service_command", side_effect=command_results) as service,
+            patch.object(Path, "iterdir") as list_spool_files,
+        ):
+            result = main.reset_windows_print_spooler("Zebra Queue")
+
+        self.assertFalse(result["ok"])
+        self.assertIn("running as Administrator", result["error"])
+        self.assertIn("Access is denied", result["error"])
+        list_spool_files.assert_not_called()
+        service.assert_has_calls([call("stop"), call("start")])
+
+    def test_reset_button_warns_that_every_windows_queue_is_cleared(self):
+        self.assertIn("Reset Windows Print Queue", main.MOBILE_HTML)
+        self.assertIn("remove ALL queued print jobs on this PC", main.MOBILE_HTML)
+        self.assertIn("machine-wide reset can still run", main.MOBILE_HTML)
+        self.assertIn("'/diagnostics/spooler/reset'", main.MOBILE_HTML)
+
+    def test_spooler_reset_endpoint_does_not_require_printer_enumeration(self):
+        reset_result = {
+            "ok": True,
+            "scope": "all_windows_printers",
+            "files_deleted": 1,
+            "failed_files": [],
+            "error": "",
+        }
+        with (
+            patch.object(main, "reset_windows_print_spooler", return_value=reset_result) as reset,
+            patch.object(main, "record_print_attempt"),
+        ):
+            response = main.diagnostics_reset_spooler(main.ResetSpoolerRequest())
+
+        self.assertEqual(response.status_code, 200)
+        reset.assert_called_once_with("")
 
     def test_print_response_reports_pairs_and_physical_labels(self):
         result = {
@@ -548,6 +630,10 @@ class CatalogDraftTests(unittest.TestCase):
         self.assertIn("readHistory().filter", main.MOBILE_HTML)
         self.assertIn("catalogMatches(job, products)", main.MOBILE_HTML)
         self.assertIn("'/catalog-draft/backfill'", main.MOBILE_HTML)
+
+    def test_browser_retains_up_to_five_hundred_searchable_labels(self):
+        self.assertIn("const MAX_HISTORY = 500;", main.MOBILE_HTML)
+        self.assertIn("writeHistory(deduped.slice(0, MAX_HISTORY));", main.MOBILE_HTML)
 
 
 if __name__ == "__main__":

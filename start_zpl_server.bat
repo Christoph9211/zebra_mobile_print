@@ -1,3 +1,3 @@
 @echo off
-cd /d C:\Users\route\github\zebra_mobile_print
-uv run main.py
+cd /d "%~dp0"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Reset-Label-Print-Server.ps1" -NoPause
