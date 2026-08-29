@@ -41,19 +41,30 @@ class MarkedDownPriceTests(unittest.TestCase):
         self.assertEqual(len(split_labels(zpl)), 2)
         self.assertNotIn("PRICE REDUCED", price_label)
         self.assertNotIn("^FDWAS ", price_label)
-        self.assertNotIn("^GB", price_label)
         self.assertIn(
-            "^FO16,22\n^FB374,1,0,C,0\n^A0N,38,38\n^FDCHERRY PIE^FS",
+            "^FO16,22\n^FB374,1,0,L,0\n^A0N,14,12\n^FDROUTE 66 HEMP^FS",
             price_label,
         )
-        self.assertIn("^FO16,64\n^FB374,1,0,C,0\n^A0N,20,20\n^FD1g - HYBRID^FS", price_label)
-        self.assertIn("^FO16,112\n^FB374,1,0,C,0\n^A0N,42,42\n^FD$25.00^FS", price_label)
+        self.assertIn("^FO16,40\n^GB374,2,2^FS", price_label)
+        self.assertIn(
+            "^FO16,46\n^FB374,1,0,L,0\n^A0N,52,52\n^FDCHERRY PIE^FS",
+            price_label,
+        )
+        self.assertIn("^FO16,136\n^FB213,1,0,L,0\n^A0N,20,20\n^FD1g - HYBRID^FS", price_label)
+        self.assertIn("^FO241,128\n^FB149,1,0,R,0\n^A0N,52,37\n^FD$25.00^FS", price_label)
         self.assertNotIn("HEALTH WARNING", price_label)
-        self.assertIn("^FDHEALTH WARNING^FS", warning_label)
+        self.assertIn(
+            "^FO16,22\n^FB224,1,0,L,0\n^A0N,12,11\n^FDROUTE 66 HEMP^FS",
+            warning_label,
+        )
+        self.assertIn(
+            "^FO240,22\n^FB150,1,0,R,0\n^A0N,14,14\n^FDHEALTH WARNING^FS",
+            warning_label,
+        )
         self.assertNotIn("CHERRY PIE", warning_label)
         self.assertNotIn("$25.00", warning_label)
 
-    def test_details_stay_compact_when_subtitle_or_markdown_needs_the_space(self):
+    def test_details_scale_up_only_when_split_row_has_space(self):
         subtitled = main.build_price_label_zpl(
             "Cherry Pie",
             "$25.00",
@@ -70,15 +81,15 @@ class MarkedDownPriceTests(unittest.TestCase):
             strain_type="Hybrid",
         )
 
-        for zpl in (subtitled, marked_down):
-            self.assertIn("^FO16,78\n^FB374,1,0,C,0\n^A0N,14,14\n^FD1g - HYBRID^FS", zpl)
+        self.assertIn("^FO16,136\n^FB213,1,0,L,0\n^A0N,20,20\n^FD1g - HYBRID^FS", subtitled)
+        self.assertIn("^FO16,102\n^FB213,1,0,L,0\n^A0N,14,14\n^FD1g - HYBRID^FS", marked_down)
 
         self.assertIn(
-            "^FO16,22\n^FB374,1,0,C,0\n^A0N,34,34\n^FDCHERRY PIE^FS",
+            "^FO16,46\n^FB374,1,0,L,0\n^A0N,36,36\n^FDCHERRY PIE^FS",
             subtitled,
         )
         self.assertIn(
-            "^FO16,60\n^FB374,1,0,C,0\n^A0N,15,15\n^FDLive Rosin^FS",
+            "^FO16,84\n^FB374,1,0,L,0\n^A0N,15,15\n^FDLIVE ROSIN^FS",
             subtitled,
         )
 
@@ -110,13 +121,41 @@ class MarkedDownPriceTests(unittest.TestCase):
         price_label = split_labels(zpl)[0]
 
         self.assertIn("^A0N,14,14\n^FD" + ("X" * 40), price_label)
-        self.assertIn("^A0N,11,11\n^FD" + ("Y" * 50), price_label)
+        self.assertIn(
+            "^FB374,1,0,C,0\n^A0N,11,11\n^FD" + ("Y" * 50),
+            price_label,
+        )
+
+    def test_long_details_use_full_width_instead_of_clipping(self):
+        zpl = main.build_price_label_zpl(
+            "Peach Ringz",
+            "$34.99",
+            size="1 gram",
+            strain_type="Indica Dominant Hybrid",
+            price_input="$34.99",
+        )
+
+        self.assertIn("^FO16,102\n^FB374,1,0,L,0\n^A0N,14,14", zpl)
+        self.assertIn("^FO16,118\n^GB374,2,2^FS", zpl)
+
+    def test_long_markdown_price_does_not_overlap_old_price(self):
+        zpl = main.build_price_label_zpl(
+            "Peach Ringz",
+            "Y" * 13,
+            marked_down=True,
+            original_price="$40.00",
+            price_input="Y" * 13,
+        )
+
+        self.assertIn("^FO16,142\n^FB374,1,0,C,0\n^A0N,28,28", zpl)
+        self.assertIn("^FO16,174\n^FB374,1,0,C,0\n^A0N,14,14\n^FDWAS $40.00^FS", zpl)
 
     def test_layout_sections_stay_inside_safe_margins(self):
         price_sections = main.build_price_label_sections()
         warning_sections = main.build_warning_label_sections()
 
-        self.assertEqual(price_sections["headerSection"]["top"], main.LABEL_MARGIN_DOTS)
+        self.assertEqual(price_sections["brandSection"]["top"], main.LABEL_MARGIN_DOTS)
+        self.assertGreater(price_sections["headerSection"]["top"], price_sections["brandRule"]["top"])
         self.assertLessEqual(
             price_sections["priceSection"]["top"] + price_sections["priceSection"]["height"],
             main.LABEL_HEIGHT_DOTS - main.LABEL_MARGIN_DOTS,
@@ -142,7 +181,8 @@ class MarkedDownPriceTests(unittest.TestCase):
         price_label, warning_label = split_labels(zpl)
 
         self.assertIn("^PW609", zpl)
-        self.assertIn("^FB577,1,0,C,0", price_label)
+        self.assertIn("^FB577,1,0,L,0", price_label)
+        self.assertIn("^FO363,128\n^FB230,1,0,R,0", price_label)
         self.assertRegex(warning_label, r"\^FO16,\d+\n\^A0N")
         self.assertNotIn("•", zpl)
         self.assertNotIn("Δ", zpl)
@@ -207,12 +247,35 @@ class MarkedDownPriceTests(unittest.TestCase):
         payload = warning_payload(zpl)
 
         self.assertEqual(len(split_labels(zpl)), 1)
-        self.assertIn("^A0N,30,30\n^FDPEACH RINGZ^FS", zpl)
-        self.assertIn("^A0N,14,14\n^FDSATIVA^FS", zpl)
-        self.assertIn("^A0N,34,34\n^FD$10.00^FS", zpl)
+        self.assertIn("^FDROUTE 66 HEMP^FS", zpl)
+        self.assertIn("^FO16,46\n^FB374,1,0,L,0\n^A0N,26,26\n^FDPEACH RINGZ^FS", zpl)
+        self.assertIn("^FO16,78\n^FB213,1,0,L,0\n^A0N,14,14\n^FDSATIVA^FS", zpl)
+        self.assertIn("^FO241,73\n^FB149,1,0,R,0\n^A0N,32,28\n^FD$10.00^FS", zpl)
         self.assertIn("^FDHEALTH WARNING^FS", zpl)
         self.assertEqual(
             payload.split(),
+            main.zpl_escape(SAMPLE_WARNING).split(),
+        )
+
+    def test_marked_down_preroll_keeps_full_size_warning_area(self):
+        zpl = main.build_zpl_2x1_centered(
+            "Peach Ringz",
+            "$10.00",
+            SAMPLE_WARNING,
+            True,
+            marked_down=True,
+            original_price="$15.00",
+            strain_type="Sativa",
+            price_input="$10.00",
+            single_preroll_label=True,
+        )
+
+        self.assertIn("^FO16,78\n^FB213,1,0,L,0\n^A0N,14,14\n^FDSATIVA^FS", zpl)
+        self.assertIn("^FO16,94\n^FB213,1,0,L,0\n^A0N,11,11\n^FDWAS $15.00^FS", zpl)
+        self.assertIn("^FDWAS $15.00^FS", zpl)
+        self.assertIn("^A0N,14,10", zpl)
+        self.assertEqual(
+            warning_payload(zpl).split(),
             main.zpl_escape(SAMPLE_WARNING).split(),
         )
 

@@ -49,25 +49,29 @@ LABEL_HEIGHT_DOTS = int(os.environ.get("ZPL_LABEL_HEIGHT_DOTS", "203"))
 LABEL_Y_OFFSET = int(os.environ.get("ZPL_LABEL_Y_OFFSET", "6"))
 LABEL_MARGIN_DOTS = 16
 SECTION_GAP_DOTS = 4
+BUSINESS_NAME = "ROUTE 66 HEMP"
+BRAND_FONT_DOTS = 14
+WARNING_BRAND_FONT_DOTS = 12
+BRAND_RULE_THICKNESS_DOTS = 2
+COLUMN_GAP_DOTS = 12
 HEADER_SECTION_HEIGHT_DOTS = 52
 DETAILS_SECTION_HEIGHT_DOTS = 18
-STANDARD_TITLE_FONT_MAX_DOTS = 38
-STANDARD_TITLE_WITH_SUBTITLE_FONT_MAX_DOTS = 34
-PREROLL_TITLE_FONT_MAX_DOTS = 30
+STANDARD_TITLE_FONT_MAX_DOTS = 52
+STANDARD_TITLE_WITH_SUBTITLE_FONT_MAX_DOTS = 36
+PREROLL_TITLE_FONT_MAX_DOTS = 26
 TITLE_FONT_MIN_DOTS = 10
 SUBTITLE_FONT_DOTS = 15
 DETAILS_FONT_DOTS = 14
 DETAILS_FONT_MAX_DOTS = 20
-PROMO_FONT_DOTS = 14
-PRICE_FONT_MAX_DOTS = 42
+PROMO_FONT_DOTS = 12
+PRICE_FONT_MAX_DOTS = 52
 PRICE_FONT_MIN_DOTS = 10
 OLD_PRICE_FONT_DOTS = 14
-WARNING_HEADING_FONT_DOTS = 20
+WARNING_HEADING_FONT_DOTS = 14
 WARNING_FONT_MAX_DOTS = 18
 WARNING_FONT_MIN_DOTS = 10
 PREROLL_WARNING_HEADING_FONT_DOTS = 14
 PREROLL_WARNING_TOP_DOTS = 123
-PREROLL_MARKDOWN_WARNING_TOP_DOTS = 126
 WARNING_MAX_CHARACTERS = 600
 PRINT_LOG_LIMIT = 50
 PRINT_ATTEMPT_LOG: deque[dict[str, Any]] = deque(maxlen=PRINT_LOG_LIMIT)
@@ -194,11 +198,15 @@ def format_product_details(size: str, strain_type: str) -> str:
 
 
 def build_price_label_sections() -> dict[str, dict[str, int]]:
-    """Allocate the full label to product and price content."""
-    header_top = LABEL_MARGIN_DOTS
+    """Allocate the label to the brand masthead, product, and retail details."""
+    brand_top = LABEL_MARGIN_DOTS
+    rule_top = brand_top + BRAND_FONT_DOTS + SECTION_GAP_DOTS
+    header_top = rule_top + BRAND_RULE_THICKNESS_DOTS + SECTION_GAP_DOTS
     details_top = header_top + HEADER_SECTION_HEIGHT_DOTS + SECTION_GAP_DOTS
     price_top = details_top + DETAILS_SECTION_HEIGHT_DOTS + SECTION_GAP_DOTS
     return {
+        "brandSection": {"top": brand_top, "height": BRAND_FONT_DOTS},
+        "brandRule": {"top": rule_top, "height": BRAND_RULE_THICKNESS_DOTS},
         "headerSection": {"top": header_top, "height": HEADER_SECTION_HEIGHT_DOTS},
         "detailsSection": {"top": details_top, "height": DETAILS_SECTION_HEIGHT_DOTS},
         "priceSection": {
@@ -209,10 +217,13 @@ def build_price_label_sections() -> dict[str, dict[str, int]]:
 
 
 def build_warning_label_sections() -> dict[str, dict[str, int]]:
-    """Reserve a short heading and give the rest of the label to the warning."""
+    """Share the masthead between the brand and warning heading."""
     heading_top = LABEL_MARGIN_DOTS
-    warning_top = heading_top + WARNING_HEADING_FONT_DOTS + 8
+    rule_top = heading_top + max(WARNING_BRAND_FONT_DOTS, WARNING_HEADING_FONT_DOTS) + SECTION_GAP_DOTS
+    warning_top = rule_top + BRAND_RULE_THICKNESS_DOTS + 6
     return {
+        "brandSection": {"top": heading_top, "height": WARNING_BRAND_FONT_DOTS},
+        "brandRule": {"top": rule_top, "height": BRAND_RULE_THICKNESS_DOTS},
         "headerSection": {"top": heading_top, "height": WARNING_HEADING_FONT_DOTS},
         "warningSection": {
             "top": warning_top,
@@ -221,25 +232,54 @@ def build_warning_label_sections() -> dict[str, dict[str, int]]:
     }
 
 
-def draw_centered_text(text: str, y: int, font_height: int, font_width: Optional[int] = None) -> list[str]:
+def draw_text_block(
+    text: str,
+    x: int,
+    y: int,
+    width: int,
+    font_height: int,
+    font_width: Optional[int] = None,
+    alignment: str = "L",
+) -> list[str]:
     if not text:
         return []
-    printable_width = LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2)
     return [
-        f"^FO{LABEL_MARGIN_DOTS},{y}",
-        f"^FB{printable_width},1,0,C,0",
+        f"^FO{x},{y}",
+        f"^FB{width},1,0,{alignment},0",
         f"^A0N,{font_height},{font_width or font_height}",
         f"^FD{zpl_escape(text)}^FS",
     ]
 
 
-def draw_strikethrough_text(text: str, y: int, font_height: int) -> list[str]:
+def draw_centered_text(text: str, y: int, font_height: int, font_width: Optional[int] = None) -> list[str]:
+    return draw_text_block(
+        text,
+        LABEL_MARGIN_DOTS,
+        y,
+        LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2),
+        font_height,
+        font_width,
+        "C",
+    )
+
+
+def draw_strikethrough_text(
+    text: str,
+    y: int,
+    font_height: int,
+    x: int = LABEL_MARGIN_DOTS,
+    width: Optional[int] = None,
+    alignment: str = "C",
+) -> list[str]:
     text = zpl_escape(text)
-    printable_width = LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2)
-    strike_width = min(printable_width, max(70, len(text) * 8))
-    strike_x = LABEL_MARGIN_DOTS + ((printable_width - strike_width) // 2)
+    block_width = width or LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2)
+    strike_width = min(block_width, max(70, len(text) * 8))
+    strike_x = {
+        "L": x,
+        "R": x + block_width - strike_width,
+    }.get(alignment, x + ((block_width - strike_width) // 2))
     return [
-        *draw_centered_text(text, y, font_height),
+        *draw_text_block(text, x, y, block_width, font_height, alignment=alignment),
         f"^FO{strike_x},{y + (font_height // 2)}",
         f"^GB{strike_width},2,2^FS",
     ]
@@ -299,11 +339,14 @@ def build_price_label_zpl(
 ) -> str:
     """Render the full-size retail product and price label."""
     name = zpl_escape(name).upper()
-    subtitle = zpl_escape(subtitle)
+    subtitle = zpl_escape(subtitle).upper()
     details = format_product_details(size, strain_type)
     display_price = zpl_escape(price_input) or zpl_escape(price)
     original_price = zpl_escape(original_price)
     printable_width = LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2)
+    price_column_width = printable_width * 2 // 5
+    details_column_width = printable_width - price_column_width - COLUMN_GAP_DOTS
+    price_x = LABEL_MARGIN_DOTS + details_column_width + COLUMN_GAP_DOTS
     title_font = fitted_font_size(
         name,
         maximum=(
@@ -314,59 +357,134 @@ def build_price_label_zpl(
         minimum=TITLE_FONT_MIN_DOTS,
         width_dots=printable_width,
     )
-    price_font = fitted_font_size(
-        display_price,
-        maximum=PRICE_FONT_MAX_DOTS,
-        minimum=PRICE_FONT_MIN_DOTS,
-        width_dots=printable_width,
+    # ponytail: use the split grid only while both one-line fields fit at their intended sizes.
+    split_price = (
+        len(display_price) <= 12
+        and len(details) * DETAILS_FONT_DOTS * 2 <= details_column_width * 3
     )
-    emphasize_details = not marked_down and not subtitle
-    details_font = (
-        fitted_font_size(details, DETAILS_FONT_MAX_DOTS, DETAILS_FONT_DOTS, printable_width)
-        if emphasize_details
-        else DETAILS_FONT_DOTS
+    details_width = details_column_width if split_price else printable_width
+    details_font = fitted_font_size(
+        details,
+        DETAILS_FONT_MAX_DOTS if split_price and not marked_down else DETAILS_FONT_DOTS,
+        DETAILS_FONT_DOTS,
+        details_width,
     )
     # Positive values move content up; negative values move content down.
     y_offset = LABEL_Y_OFFSET - vertical_offset
     sections = build_price_label_sections()
+    brand_section = sections["brandSection"]
+    brand_rule = sections["brandRule"]
     header_section = sections["headerSection"]
     details_section = sections["detailsSection"]
     price_section = sections["priceSection"]
 
     z = ["^XA", f"^PW{LABEL_WIDTH_DOTS}", f"^LL{LABEL_HEIGHT_DOTS}", f"^MD{darkness}"]
+    z += draw_text_block(
+        BUSINESS_NAME,
+        LABEL_MARGIN_DOTS,
+        brand_section["top"] + y_offset,
+        printable_width,
+        BRAND_FONT_DOTS,
+        BRAND_FONT_DOTS - 2,
+    )
+    z += [
+        f"^FO{LABEL_MARGIN_DOTS},{brand_rule['top'] + y_offset}",
+        f"^GB{printable_width},{BRAND_RULE_THICKNESS_DOTS},{BRAND_RULE_THICKNESS_DOTS}^FS",
+    ]
 
-    # Header: large title stays below the rounded-corner/non-printable area.
-    z += draw_centered_text(name, header_section["top"] + y_offset, title_font)
+    # Product and supporting copy follow the selected open-grid hierarchy.
+    z += draw_text_block(
+        name,
+        LABEL_MARGIN_DOTS,
+        header_section["top"] + y_offset,
+        printable_width,
+        title_font,
+    )
     if subtitle:
-        z += draw_centered_text(
+        z += draw_text_block(
             subtitle,
+            LABEL_MARGIN_DOTS,
             header_section["top"] + 38 + y_offset,
+            printable_width,
             SUBTITLE_FONT_DOTS,
         )
 
-    # Details: weight and strain get their own full-width line.
-    if details:
-        details_y = header_section["top"] + 42 if emphasize_details else details_section["top"]
-        z += draw_centered_text(details, details_y + y_offset, details_font)
-
-    # Price: monochrome hierarchy carries the meaning; no color is required.
-    if marked_down:
-        z += draw_centered_text(
-            "PRICE REDUCED",
-            price_section["top"] + y_offset,
-            PROMO_FONT_DOTS,
-        )
-    z += draw_centered_text(
-        display_price,
-        price_section["top"] + (18 if marked_down else 12 if emphasize_details else 16) + y_offset,
-        price_font,
+    details_y = (
+        details_section["top"]
+        if marked_down or not split_price
+        else price_section["top"] + 12
     )
-    if marked_down:
-        z += draw_strikethrough_text(
-            f"WAS {original_price}",
-            price_section["top"] + 64 + y_offset,
-            OLD_PRICE_FONT_DOTS,
+    if details:
+        z += draw_text_block(
+            details,
+            LABEL_MARGIN_DOTS,
+            details_y + y_offset,
+            details_width,
+            details_font,
         )
+
+    divider_width = details_column_width if split_price else printable_width
+    z += [
+        f"^FO{LABEL_MARGIN_DOTS},{price_section['top'] - 6 + y_offset}",
+        f"^GB{divider_width},{BRAND_RULE_THICKNESS_DOTS},{BRAND_RULE_THICKNESS_DOTS}^FS",
+    ]
+
+    if split_price:
+        if marked_down:
+            z += draw_text_block(
+                "PRICE REDUCED",
+                LABEL_MARGIN_DOTS,
+                price_section["top"] + 4 + y_offset,
+                details_column_width,
+                PROMO_FONT_DOTS,
+            )
+            z += draw_strikethrough_text(
+                f"WAS {original_price}",
+                price_section["top"] + 27 + y_offset,
+                OLD_PRICE_FONT_DOTS,
+                width=details_column_width,
+                alignment="L",
+            )
+        price_height = 48 if marked_down else PRICE_FONT_MAX_DOTS
+        price_width = fitted_font_size(
+            display_price,
+            maximum=42 if marked_down else 44,
+            minimum=PRICE_FONT_MIN_DOTS,
+            width_dots=price_column_width,
+        )
+        z += draw_text_block(
+            display_price,
+            price_x,
+            price_section["top"] + 4 + y_offset,
+            price_column_width,
+            price_height,
+            price_width,
+            "R",
+        )
+    else:
+        if marked_down:
+            z += draw_centered_text(
+                "PRICE REDUCED",
+                price_section["top"] + y_offset,
+                PROMO_FONT_DOTS,
+            )
+        price_font = fitted_font_size(
+            display_price,
+            maximum=28 if marked_down else 42,
+            minimum=PRICE_FONT_MIN_DOTS,
+            width_dots=printable_width,
+        )
+        z += draw_centered_text(
+            display_price,
+            price_section["top"] + (18 if marked_down else 8) + y_offset,
+            price_font,
+        )
+        if marked_down:
+            z += draw_strikethrough_text(
+                f"WAS {original_price}",
+                price_section["top"] + 50 + y_offset,
+                OLD_PRICE_FONT_DOTS,
+            )
 
     z += ["^XZ"]
     return "\n".join(z) + "\n"
@@ -380,6 +498,10 @@ def build_warning_label_zpl(
     """Render the full-size health warning label without truncating its text."""
     printable_width = LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2)
     sections = build_warning_label_sections()
+    brand_width = printable_width * 3 // 5
+    heading_width = printable_width - brand_width
+    brand_section = sections["brandSection"]
+    brand_rule = sections["brandRule"]
     warning_section = sections["warningSection"]
     lines, font_height, font_width, line_spacing, block_height = fit_warning_text(
         warning,
@@ -389,11 +511,26 @@ def build_warning_label_zpl(
     y_offset = LABEL_Y_OFFSET - vertical_offset
     warning_y = warning_section["top"] + ((warning_section["height"] - block_height) // 2) + y_offset
     z = ["^XA", f"^PW{LABEL_WIDTH_DOTS}", f"^LL{LABEL_HEIGHT_DOTS}", f"^MD{darkness}"]
-    z += draw_centered_text(
-        "HEALTH WARNING",
-        sections["headerSection"]["top"] + y_offset,
-        WARNING_HEADING_FONT_DOTS,
+    z += draw_text_block(
+        BUSINESS_NAME,
+        LABEL_MARGIN_DOTS,
+        brand_section["top"] + y_offset,
+        brand_width,
+        WARNING_BRAND_FONT_DOTS,
+        WARNING_BRAND_FONT_DOTS - 1,
     )
+    z += draw_text_block(
+        "HEALTH WARNING",
+        LABEL_MARGIN_DOTS + brand_width,
+        sections["headerSection"]["top"] + y_offset,
+        heading_width,
+        WARNING_HEADING_FONT_DOTS,
+        alignment="R",
+    )
+    z += [
+        f"^FO{LABEL_MARGIN_DOTS},{brand_rule['top'] + y_offset}",
+        f"^GB{printable_width},{BRAND_RULE_THICKNESS_DOTS},{BRAND_RULE_THICKNESS_DOTS}^FS",
+    ]
     z += draw_warning_lines(lines, warning_y, font_height, font_width, line_spacing)
     z += ["^XZ"]
     return "\n".join(z) + "\n"
@@ -415,19 +552,22 @@ def build_preroll_label_zpl(
     strain_type = zpl_escape(strain_type).upper()
     display_price = zpl_escape(price_input) or zpl_escape(price)
     printable_width = LABEL_WIDTH_DOTS - (LABEL_MARGIN_DOTS * 2)
+    price_column_width = printable_width * 2 // 5
+    details_column_width = printable_width - price_column_width - COLUMN_GAP_DOTS
+    price_x = LABEL_MARGIN_DOTS + details_column_width + COLUMN_GAP_DOTS
     title_font = fitted_font_size(
         name,
         PREROLL_TITLE_FONT_MAX_DOTS,
         TITLE_FONT_MIN_DOTS,
         printable_width,
     )
-    price_font = fitted_font_size(
+    price_width = fitted_font_size(
         display_price,
-        28 if marked_down else 34,
+        26 if marked_down else 28,
         PRICE_FONT_MIN_DOTS,
-        printable_width,
+        price_column_width,
     )
-    warning_top = PREROLL_MARKDOWN_WARNING_TOP_DOTS if marked_down else PREROLL_WARNING_TOP_DOTS
+    warning_top = PREROLL_WARNING_TOP_DOTS
     warning_height = LABEL_HEIGHT_DOTS - LABEL_MARGIN_DOTS - warning_top
     lines, warning_font, warning_width, line_spacing, block_height = fit_warning_text(
         warning,
@@ -436,17 +576,65 @@ def build_preroll_label_zpl(
     )
     y_offset = LABEL_Y_OFFSET - vertical_offset
     warning_y = warning_top + ((warning_height - block_height) // 2) + y_offset
+    sections = build_price_label_sections()
+    brand_section = sections["brandSection"]
+    brand_rule = sections["brandRule"]
+    header_section = sections["headerSection"]
 
     z = ["^XA", f"^PW{LABEL_WIDTH_DOTS}", f"^LL{LABEL_HEIGHT_DOTS}", f"^MD{darkness}"]
-    z += draw_centered_text(name, LABEL_MARGIN_DOTS + y_offset, title_font)
+    z += draw_text_block(
+        BUSINESS_NAME,
+        LABEL_MARGIN_DOTS,
+        brand_section["top"] + y_offset,
+        printable_width,
+        BRAND_FONT_DOTS,
+        BRAND_FONT_DOTS - 2,
+    )
+    z += [
+        f"^FO{LABEL_MARGIN_DOTS},{brand_rule['top'] + y_offset}",
+        f"^GB{printable_width},{BRAND_RULE_THICKNESS_DOTS},{BRAND_RULE_THICKNESS_DOTS}^FS",
+    ]
+    z += draw_text_block(
+        name,
+        LABEL_MARGIN_DOTS,
+        header_section["top"] + y_offset,
+        printable_width,
+        title_font,
+    )
     if strain_type:
-        z += draw_centered_text(strain_type, 47 + y_offset, DETAILS_FONT_DOTS)
-    z += draw_centered_text(display_price, 64 + y_offset, price_font)
+        z += draw_text_block(
+            strain_type,
+            LABEL_MARGIN_DOTS,
+            72 + y_offset,
+            details_column_width,
+            DETAILS_FONT_DOTS,
+        )
+    z += draw_text_block(
+        display_price,
+        price_x,
+        67 + y_offset,
+        price_column_width,
+        28 if marked_down else 32,
+        price_width,
+        "R",
+    )
     if marked_down:
-        z += draw_strikethrough_text(f"WAS {original_price}", 90 + y_offset, 12)
-    z += draw_centered_text(
+        z += draw_strikethrough_text(
+            f"WAS {original_price}",
+            88 + y_offset,
+            11,
+            width=details_column_width,
+            alignment="L",
+        )
+    z += [
+        f"^FO{LABEL_MARGIN_DOTS},{warning_top - PREROLL_WARNING_HEADING_FONT_DOTS - 7 + y_offset}",
+        f"^GB{printable_width},{BRAND_RULE_THICKNESS_DOTS},{BRAND_RULE_THICKNESS_DOTS}^FS",
+    ]
+    z += draw_text_block(
         "HEALTH WARNING",
-        warning_top - PREROLL_WARNING_HEADING_FONT_DOTS - 5 + y_offset,
+        LABEL_MARGIN_DOTS,
+        warning_top - PREROLL_WARNING_HEADING_FONT_DOTS - 3 + y_offset,
+        printable_width,
         PREROLL_WARNING_HEADING_FONT_DOTS,
     )
     z += draw_warning_lines(lines, warning_y, warning_font, warning_width, line_spacing)
@@ -1053,7 +1241,7 @@ class PrintJob(BaseModel):
             raise ValueError("Original price is required for a marked-down label.")
         warning_section = build_warning_label_sections()["warningSection"]
         if self.single_preroll_label:
-            warning_top = PREROLL_MARKDOWN_WARNING_TOP_DOTS if self.marked_down else PREROLL_WARNING_TOP_DOTS
+            warning_top = PREROLL_WARNING_TOP_DOTS
             warning_section = {
                 "top": warning_top,
                 "height": LABEL_HEIGHT_DOTS - LABEL_MARGIN_DOTS - warning_top,
